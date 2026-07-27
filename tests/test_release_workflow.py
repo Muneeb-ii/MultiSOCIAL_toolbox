@@ -50,16 +50,28 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "windows-client-compat" in workflow
     assert "windows-2022" in workflow
     assert "Relocate bundle to an installation-like path" in workflow
-    assert "Run downloaded GUI launch, worker probes, and audio smoke" in workflow
+    assert "Run extracted canonical ZIP through packaged boundary" in workflow
     assert "repetition: [1, 2, 3]" in workflow
     assert "Verify committed Windows packaging inputs" in workflow
     assert "git ls-files --error-unmatch" in workflow
+    assert 'YOLO_AUTOINSTALL: "false"' in workflow
+    assert 'YOLOv5_AUTOINSTALL: "false"' in workflow
+    assert workflow.count("packaging/audit_windows_environment.py") == 3
+    assert "build_status=$?" in workflow
     assert "packaging/windows_gui.spec" in workflow
     assert "packaging/windows_worker.spec" in workflow
     assert "MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny" in workflow
     assert "needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e" in workflow
-    assert '"type":"cancel"' in workflow
-    assert "test -z \"$(find .tmp/runtime-fixtures/cancelled" in workflow
+    assert "windows_packaged_e2e.py" in workflow
+    assert "Expand-Archive" in workflow
+    assert "path: release-artifacts/*-windows.zip" in workflow
+    assert "blank.avi" not in workflow
+    e2e = (REPO_ROOT / ".github" / "scripts" / "windows_packaged_e2e.py").read_text(encoding="utf-8")
+    assert "PERSON_FIXTURE_GIT_BLOB" in e2e
+    assert "for attempt in range(1, 11)" in e2e
+    assert "cancel_after_seconds=0.1" in e2e
+    assert "_assert_success(single_result" in e2e
+    assert "_assert_success(multi_result" in e2e
     assert "--hash=sha256:" in standard_lock
     assert "--hash=sha256:" in complete_lock
     assert "--hash=sha256:" in gui_lock

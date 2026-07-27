@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 import sys
 
+# Optional-model discovery must never mutate an installed Windows worker.
+if sys.platform == "win32":
+    os.environ["YOLO_AUTOINSTALL"] = "false"
+    os.environ["YOLOv5_AUTOINSTALL"] = "false"
 
 _DLL_DIR_HANDLES = []
 
@@ -67,33 +71,83 @@ def configure_windows_dll_search_path(bundle_root: str, *, include_tensor_runtim
 # that PyInstaller keeps in the PYZ archive rather than on disk.
 _original_listdir = os.listdir
 
+_WINDOWS_SPEECHBRAIN_FILES = {
+    "utils": [
+        "__init__.py",
+        "callchains.py",
+        "checkpoints.py",
+        "data_pipeline.py",
+        "data_utils.py",
+        "depgraph.py",
+        "distributed.py",
+        "metric_stats.py",
+        "parameter_transfer.py",
+        "superpowers.py",
+        "text_to_sequence.py",
+        "torch_audio_backend.py",
+    ],
+    "dataio": [
+        "__init__.py",
+        "batch.py",
+        "dataio.py",
+        "dataloader.py",
+        "dataset.py",
+        "encoder.py",
+        "preprocess.py",
+    ],
+    "nnet": [
+        "CNN.py",
+        "RNN.py",
+        "__init__.py",
+        "activations.py",
+        "attention.py",
+        "containers.py",
+        "embedding.py",
+        "linear.py",
+        "losses.py",
+        "normalization.py",
+        "pooling.py",
+        "schedulers.py",
+    ],
+}
+_NON_WINDOWS_SPEECHBRAIN_FILES = {
+    "utils": [
+        "Accuracy.py", "DER.py", "EDER.py", "__init__.py", "_workarounds.py",
+        "bleu.py", "callchains.py", "checkpoints.py", "data_pipeline.py",
+        "data_utils.py", "depgraph.py", "distributed.py", "edit_distance.py",
+        "epoch_loop.py", "hparams.py", "hpopt.py", "logger.py", "metric_stats.py",
+        "optimizers.py", "parallel.py", "parameter_transfer.py", "profiling.py",
+        "superpowers.py", "text_to_sequence.py", "torch_audio_backend.py", "train_logger.py",
+    ],
+    "dataio": [
+        "__init__.py", "batch.py", "dataio.py", "dataloader.py", "dataset.py",
+        "encoder.py", "iterators.py", "legacy.py", "preprocess.py", "sampler.py", "wer.py",
+    ],
+    "nnet": [
+        "CNN.py", "RNN.py", "__init__.py", "activations.py", "attention.py",
+        "autoencoders.py", "containers.py", "diffusion.py", "dropout.py",
+        "embedding.py", "linear.py", "losses.py", "normalization.py",
+        "pooling.py", "quantisers.py", "schedulers.py", "unet.py", "utils.py",
+    ],
+}
+
 
 def _patched_listdir(path="."):
     str_path = str(path).replace("\\", "/")
     try:
         return _original_listdir(path)
     except FileNotFoundError:
+        files = (
+            _WINDOWS_SPEECHBRAIN_FILES
+            if sys.platform == "win32"
+            else _NON_WINDOWS_SPEECHBRAIN_FILES
+        )
         if "speechbrain/utils" in str_path:
-            return [
-                "Accuracy.py", "DER.py", "EDER.py", "__init__.py", "_workarounds.py",
-                "bleu.py", "callchains.py", "checkpoints.py", "data_pipeline.py",
-                "data_utils.py", "depgraph.py", "distributed.py", "edit_distance.py",
-                "epoch_loop.py", "hparams.py", "hpopt.py", "logger.py", "metric_stats.py",
-                "optimizers.py", "parallel.py", "parameter_transfer.py", "profiling.py",
-                "superpowers.py", "text_to_sequence.py", "torch_audio_backend.py", "train_logger.py",
-            ]
+            return list(files["utils"])
         if "speechbrain/dataio" in str_path:
-            return [
-                "__init__.py", "batch.py", "dataio.py", "dataloader.py", "dataset.py",
-                "encoder.py", "iterators.py", "legacy.py", "preprocess.py", "sampler.py", "wer.py",
-            ]
+            return list(files["dataio"])
         if "speechbrain/nnet" in str_path:
-            return [
-                "CNN.py", "RNN.py", "__init__.py", "activations.py", "attention.py",
-                "autoencoders.py", "containers.py", "diffusion.py", "dropout.py",
-                "embedding.py", "linear.py", "losses.py", "normalization.py",
-                "pooling.py", "quantisers.py", "schedulers.py", "unet.py", "utils.py",
-            ]
+            return list(files["nnet"])
         raise
 
 

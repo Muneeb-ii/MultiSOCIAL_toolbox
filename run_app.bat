@@ -94,7 +94,7 @@ echo Activating virtual environment
 call "%VENV_DIR%\Scripts\activate.bat"
 
 set "CURRENT_STAMP="
-for /f "usebackq delims=" %%h in (`python -c "from pathlib import Path; import hashlib; print(r'%MULTISOCIAL_INSTALL_PROFILE%|%DESIRED_PYTHON%|' + hashlib.sha256(Path(r'%SCRIPT_DIR%\pyproject.toml').read_bytes()).hexdigest())"`) do set "CURRENT_STAMP=%%h"
+for /f "usebackq delims=" %%h in (`python -c "from pathlib import Path; import hashlib; print(r'%MULTISOCIAL_INSTALL_PROFILE%|%DESIRED_PYTHON%|cv2-contrib-only-v1|' + hashlib.sha256(Path(r'%SCRIPT_DIR%\pyproject.toml').read_bytes()).hexdigest())"`) do set "CURRENT_STAMP=%%h"
 set "NEEDS_INSTALL=1"
 if exist "%INSTALL_STAMP_FILE%" (
     set /p EXISTING_STAMP=<"%INSTALL_STAMP_FILE%"
@@ -148,10 +148,34 @@ print('Cleared stale multisocial-toolbox install metadata:', ', '.join(removed))
         exit /b 1
     )
     popd
-    >"%INSTALL_STAMP_FILE%" echo !CURRENT_STAMP!
 ) else (
     echo Environment already matches the %MULTISOCIAL_INSTALL_PROFILE% profile. Skipping reinstall.
 )
+
+echo Auditing OpenCV namespace ownership...
+python -c "import importlib.metadata as m, re; canonical=lambda n: re.sub(r'[-_.]+','-',n).lower(); owners=sorted(canonical(n) for n in m.packages_distributions().get('cv2',[])); raise SystemExit(0 if owners==['opencv-contrib-python'] else 1)"
+if !errorlevel! neq 0 (
+    echo Repairing conflicting OpenCV providers...
+    python -m pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python
+    if !errorlevel! neq 0 (
+        echo ERROR: Failed to remove conflicting OpenCV providers
+        pause
+        exit /b 1
+    )
+    python -m pip install "opencv-contrib-python==4.11.0.86"
+    if !errorlevel! neq 0 (
+        echo ERROR: Failed to install the approved OpenCV provider
+        pause
+        exit /b 1
+    )
+)
+python -c "import importlib.metadata as m, re; canonical=lambda n: re.sub(r'[-_.]+','-',n).lower(); owners=sorted(canonical(n) for n in m.packages_distributions().get('cv2',[])); assert owners==['opencv-contrib-python'], owners; import cv2; print('OpenCV provider audit passed:', cv2.__version__)"
+if !errorlevel! neq 0 (
+    echo ERROR: OpenCV namespace ownership remains ambiguous
+    pause
+    exit /b 1
+)
+>"%INSTALL_STAMP_FILE%" echo !CURRENT_STAMP!
 
 echo Verifying MediaPipe installation...
 python -c "import mediapipe as mp; print('MediaPipe version:', mp.__version__)"

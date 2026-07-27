@@ -24,7 +24,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from native_worker_client import PROTOCOL_VERSION, WORKER_TOKEN_ENV
+from native_worker_client import PROTOCOL_VERSION, WORKER_TOKEN_ENV, _windows_directory
 
 
 class _RedactingStream(io.TextIOBase):
@@ -57,15 +57,21 @@ def _safe_error(error: BaseException, token: str | None) -> str:
 class _StagedOutput:
     """Stage generated files beside their destination and promote atomically."""
 
-    def __init__(self, destination: str | None):
+    def __init__(self, destination: str | None, request_id: str | None = None):
         self.destination = Path(destination) if destination else None
+        self.request_id = request_id or "unscoped"
         self.path: Path | None = None
 
     def __enter__(self) -> str | None:
         if self.destination is None:
             return None
         self.destination.mkdir(parents=True, exist_ok=True)
-        self.path = Path(tempfile.mkdtemp(prefix=".multisocial-worker-", dir=self.destination))
+        self.path = Path(
+            tempfile.mkdtemp(
+                prefix=f".multisocial-worker-{self.request_id}-",
+                dir=self.destination,
+            )
+        )
         return str(self.path)
 
     def commit(self) -> None:
@@ -127,6 +133,7 @@ def _worker_runtime_diagnostics() -> dict[str, Any]:
         "mediapipe_bindings": binding_hashes,
         "loaded_module_violations": _loaded_module_violations(bundle_root),
         "native_module_violations": _native_module_violations(bundle_root),
+        "external_module_violations": _external_module_violations(bundle_root),
     }
 
 
@@ -146,18 +153,42 @@ def _loaded_windows_module_paths() -> list[Path]:
         return []
     from ctypes import wintypes
 
-    process = ctypes.windll.kernel32.GetCurrentProcess()
-    module_array = (wintypes.HMODULE * 4096)()
-    needed = wintypes.DWORD()
-    enum_modules = getattr(ctypes.windll.kernel32, "K32EnumProcessModules", None)
-    module_filename = getattr(ctypes.windll.kernel32, "K32GetModuleFileNameExW", None)
+    kernel32 = ctypes.windll.kernel32
+    process_function = kernel32.GetCurrentProcess
+    process_function.argtypes = []
+    process_function.restype = wintypes.HANDLE
+    process = process_function()
+    enum_modules = getattr(kernel32, "K32EnumProcessModules", None)
+    module_filename = getattr(kernel32, "K32GetModuleFileNameExW", None)
     if enum_modules is None or module_filename is None:
         enum_modules = ctypes.windll.psapi.EnumProcessModules
         module_filename = ctypes.windll.psapi.GetModuleFileNameExW
-    if not enum_modules(process, module_array, ctypes.sizeof(module_array), ctypes.byref(needed)):
-        raise OSError("Could not enumerate loaded worker modules")
+    enum_modules.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HMODULE),
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    enum_modules.restype = wintypes.BOOL
+    module_filename.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HMODULE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    module_filename.restype = wintypes.DWORD
 
-    count = min(len(module_array), needed.value // ctypes.sizeof(wintypes.HMODULE))
+    capacity = 256
+    while True:
+        module_array = (wintypes.HMODULE * capacity)()
+        needed = wintypes.DWORD()
+        if not enum_modules(process, module_array, ctypes.sizeof(module_array), ctypes.byref(needed)):
+            raise OSError("Could not enumerate loaded worker modules")
+        if needed.value <= ctypes.sizeof(module_array):
+            break
+        capacity = max(capacity * 2, needed.value // ctypes.sizeof(wintypes.HMODULE) + 16)
+
+    count = needed.value // ctypes.sizeof(wintypes.HMODULE)
     paths: list[Path] = []
     for module in module_array[:count]:
         buffer = ctypes.create_unicode_buffer(32768)
@@ -166,19 +197,26 @@ def _loaded_windows_module_paths() -> list[Path]:
     return paths
 
 
-def _loaded_module_violations(bundle_root: Path) -> list[str]:
+def _loaded_module_violations(
+    bundle_root: Path,
+    loaded_paths: list[Path] | None = None,
+) -> list[str]:
     """Return DLLs loaded from the containing GUI runtime instead of worker/."""
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return []
     app_root = bundle_root.parent
     violations = []
-    for path in _loaded_windows_module_paths():
+    paths = loaded_paths if loaded_paths is not None else _loaded_windows_module_paths()
+    for path in paths:
         if _path_is_within(path, app_root) and not _path_is_within(path, bundle_root):
             violations.append(path.name)
     return sorted(set(violations), key=str.casefold)
 
 
-def _native_module_violations(bundle_root: Path) -> list[str]:
+def _native_module_violations(
+    bundle_root: Path,
+    loaded_paths: list[Path] | None = None,
+) -> list[str]:
     """Return package-native extensions or DLLs resolved outside worker/."""
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return []
@@ -189,12 +227,15 @@ def _native_module_violations(bundle_root: Path) -> list[str]:
         "fbgemm",
         "libiomp",
         "mediapipe",
+        "msvcp140",
         "opencv",
         "smileapi",
         "torch",
+        "vcruntime140",
     )
     violations = []
-    for path in _loaded_windows_module_paths():
+    paths = loaded_paths if loaded_paths is not None else _loaded_windows_module_paths()
+    for path in paths:
         basename = path.name.casefold()
         package_native = path.suffix.casefold() == ".pyd" or any(
             marker in basename for marker in native_markers
@@ -204,11 +245,36 @@ def _native_module_violations(bundle_root: Path) -> list[str]:
     return sorted(set(violations), key=str.casefold)
 
 
+def _permitted_external_module_roots() -> list[Path]:
+    # DriverStore, System32, SysWOW64, and WinSxS all sit beneath this root.
+    return [_windows_directory().resolve()]
+
+
+def _external_module_violations(
+    bundle_root: Path,
+    loaded_paths: list[Path] | None = None,
+) -> list[str]:
+    """Reject non-system DLL injection without returning user-specific paths."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return []
+    allowed_roots = [bundle_root, *_permitted_external_module_roots()]
+    paths = loaded_paths if loaded_paths is not None else _loaded_windows_module_paths()
+    violations = [
+        path.name
+        for path in paths
+        if not any(_path_is_within(path, root) for root in allowed_roots)
+    ]
+    return sorted(set(violations), key=str.casefold)
+
+
 def _operation_module_names(operation: str, payload: dict[str, Any]) -> tuple[str, ...]:
     if operation in {"extract_pose", "embed_pose"}:
         return ("mediapipe", "mediapipe.python._framework_bindings", "cv2", "torch", "pose")
     if operation in {"extract_audio_features", "extract_transcripts", "align_features"}:
-        return ("audio", "opensmile", "torch", "transformers")
+        names = ["audio", "opensmile", "torch", "transformers"]
+        if operation == "extract_transcripts" and payload.get("enable_diarization"):
+            names.extend(["torchaudio", "pyannote.audio"])
+        return tuple(names)
     if operation == "probe":
         names = ["mediapipe", "mediapipe.python._framework_bindings", "cv2", "opensmile", "torch"]
         if payload.get("profile") == "complete":
@@ -242,16 +308,22 @@ def _validate_worker_runtime_provenance(operation: str, payload: dict[str, Any])
     if not loaded_python or any(not _path_is_within(path, bundle_root) for path in loaded_python):
         raise RuntimeError(f"Loaded Python runtime did not resolve beneath worker/: {python_dll.name}")
 
-    violations = _loaded_module_violations(bundle_root)
+    violations = _loaded_module_violations(bundle_root, loaded_paths)
     if violations:
         raise RuntimeError(
             "Worker loaded DLLs from the GUI runtime: " + ", ".join(violations[:10])
         )
-    native_violations = _native_module_violations(bundle_root)
+    native_violations = _native_module_violations(bundle_root, loaded_paths)
     if native_violations:
         raise RuntimeError(
             "Worker loaded package-native modules outside worker/: "
             + ", ".join(native_violations[:10])
+        )
+    external_violations = _external_module_violations(bundle_root, loaded_paths)
+    if external_violations:
+        raise RuntimeError(
+            "Worker loaded DLLs outside worker/ and permitted Windows/driver roots: "
+            + ", ".join(external_violations[:10])
         )
 
 
@@ -276,6 +348,9 @@ def _initialize_worker_operation_runtime(operation: str, payload: dict[str, Any]
     if operation in {"extract_audio_features", "extract_transcripts", "align_features"}:
         _enable_worker_tensor_loader()
         _import_worker_runtime_module("audio")
+        if operation == "extract_transcripts" and payload.get("enable_diarization"):
+            _import_worker_runtime_module("torchaudio")
+            _import_worker_runtime_module("pyannote.audio")
         return
     if operation == "probe":
         _import_worker_runtime_module("mediapipe")
@@ -311,7 +386,7 @@ def _run_pose(payload: dict[str, Any], cancelled: threading.Event, emit_progress
     if not destination:
         raise ValueError(f"{output_key} is required")
 
-    stage_context = _StagedOutput(destination)
+    stage_context = _StagedOutput(destination, payload.get("_request_id"))
     with stage_context as staged:
         processor = PoseProcessor(
             output_csv_folder=payload.get("output_csv_folder") if embed else staged,
@@ -363,7 +438,7 @@ def _run_audio_features(payload: dict[str, Any], cancelled: threading.Event, emi
     destination = payload.get("output_audio_features_folder")
     if not destination:
         raise ValueError("output_audio_features_folder is required")
-    stage_context = _StagedOutput(destination)
+    stage_context = _StagedOutput(destination, payload.get("_request_id"))
     with stage_context as stage:
         processor = AudioProcessor(stage, None, status_callback=emit_status)
         outcome = processor.extract_audio_features_batch(payload.get("audio_files") or [], progress_callback=emit_progress, cancel_check=cancelled.is_set)
@@ -382,7 +457,7 @@ def _run_transcripts(payload: dict[str, Any], cancelled: threading.Event, emit_p
     if not destination:
         raise ValueError("output_transcripts_folder is required")
     diarization = bool(payload.get("enable_diarization"))
-    stage_context = _StagedOutput(destination)
+    stage_context = _StagedOutput(destination, payload.get("_request_id"))
     with stage_context as stage:
         processor = AudioProcessor(None, stage, status_callback=emit_status, enable_speaker_diarization=diarization, auth_token=token if diarization else None)
         outcome = processor.extract_transcripts_batch(payload.get("audio_files") or [], progress_callback=emit_progress, word_timestamps=bool(payload.get("word_timestamps")), cancel_check=cancelled.is_set)
@@ -405,7 +480,7 @@ def _run_alignment(payload: dict[str, Any], cancelled: threading.Event, emit_pro
             outcome["cancelled"] = True
             break
         destination = str(Path(output_csv).parent)
-        stage_context = _StagedOutput(destination)
+        stage_context = _StagedOutput(destination, payload.get("_request_id"))
         with stage_context as stage:
             staged_output = str(Path(stage) / Path(output_csv).name)
             try:
@@ -502,6 +577,7 @@ def main() -> int:
     request_id = str(request.get("id") or "")
     operation = str(request.get("operation") or "")
     payload = dict(request.get("payload") or {})
+    payload["_request_id"] = request_id
     token = os.environ.pop(WORKER_TOKEN_ENV, None)
     _configure_worker_native_loader()
     try:
@@ -535,6 +611,12 @@ def main() -> int:
         try:
             kind, value = result_box.get(timeout=0.1)
             if kind == "result":
+                try:
+                    _validate_worker_runtime_provenance(operation, payload)
+                except Exception as exc:
+                    traceback.print_exc(file=_RedactingStream(sys.stderr, token))
+                    _emit(request_id, "error", message=_safe_error(exc, token))
+                    return 1
                 _emit(request_id, "result", result=value)
                 return 0
             _emit(request_id, "error", message=value)

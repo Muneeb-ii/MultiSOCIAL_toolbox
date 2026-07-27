@@ -9,6 +9,9 @@ from pathlib import Path
 
 REQUIREMENT = re.compile(r"^([A-Za-z0-9_.-]+)==")
 
+def canonicalize_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).casefold()
+
 
 def split_lock(text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
     preamble: list[str] = []
@@ -22,7 +25,7 @@ def split_lock(text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
                 blocks.append((current_name, current_lines))
             elif current_lines:
                 preamble.extend(current_lines)
-            current_name = match.group(1).casefold()
+            current_name = canonicalize_name(match.group(1))
             current_lines = [line]
         else:
             current_lines.append(line)
@@ -41,15 +44,15 @@ def curated_text(
     title: str,
 ) -> str:
     preamble, blocks = split_lock(source.read_text(encoding="utf-8"))
-    excluded = {name.casefold() for name in excluded or set()}
-    included = {name.casefold() for name in included or set()}
+    excluded = {canonicalize_name(name) for name in excluded or set()}
+    included = {canonicalize_name(name) for name in included or set()}
     selected = [
         lines
         for name, lines in blocks
         if name not in excluded and (not included or name in included)
     ]
     names = {
-        REQUIREMENT.match(lines[0]).group(1).casefold()
+        canonicalize_name(REQUIREMENT.match(lines[0]).group(1))
         for lines in selected
         if REQUIREMENT.match(lines[0])
     }

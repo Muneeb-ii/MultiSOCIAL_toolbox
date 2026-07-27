@@ -69,6 +69,35 @@ time.sleep(30)
     assert result["cancelled"] is True
     assert time.monotonic() - started < 5
 
+def test_forced_cancellation_cleans_only_its_request_staging(tmp_path):
+    from native_worker_client import NativeWorkerClient
+
+    destination = tmp_path / "outputs"
+    destination.mkdir()
+    unrelated = destination / ".multisocial-worker-unrelated-keep"
+    unrelated.mkdir()
+    command = _worker_script(
+        tmp_path,
+        """import json, pathlib, sys, time
+request = json.loads(sys.stdin.readline())
+destination = pathlib.Path(request["payload"]["output_audio_features_folder"])
+(destination / (".multisocial-worker-" + request["id"] + "-orphan")).mkdir()
+time.sleep(30)
+""",
+    )
+    result = NativeWorkerClient(
+        command=command,
+        cancel_grace_seconds=0.05,
+    ).run(
+        "extract_audio_features",
+        {"output_audio_features_folder": str(destination)},
+        cancel_check=lambda: True,
+    )
+
+    assert result["cancelled"] is True
+    assert unrelated.is_dir()
+    assert list(destination.iterdir()) == [unrelated]
+
 
 def test_windows_worker_launch_does_not_show_a_console(monkeypatch):
     import native_worker_client
@@ -105,6 +134,7 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     monkeypatch.setattr(native_worker_client.sys, "frozen", True, raising=False)
     monkeypatch.setattr(native_worker_client.sys, "executable", str(gui))
     monkeypatch.setenv("PATH", f"{gui.parent};C:\\Windows\\System32")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
     monkeypatch.setenv("PYTHONHOME", "bad")
     monkeypatch.setenv("PYTHONPATH", "bad")
     monkeypatch.setenv("MULTISOCIAL_FFMPEG_EXE", str(gui.parent / "ffmpeg.exe"))
@@ -114,9 +144,36 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
     assert env["PATH"].split(";")[0] == str(worker.parent)
     assert str(gui.parent) not in env["PATH"].split(";")[1:]
+    windows_root = native_worker_client.Path(r"C:\Windows")
+    assert env["PATH"].split(";")[1:] == [
+        str(windows_root / "System32"),
+        str(windows_root),
+        str(windows_root / "System32" / "Wbem"),
+        str(windows_root / "System32" / "WindowsPowerShell" / "v1.0"),
+    ]
     assert "PYTHONHOME" not in env
     assert "PYTHONPATH" not in env
     assert "MULTISOCIAL_FFMPEG_EXE" not in env
+
+def test_worker_payload_paths_are_absolute_before_worker_cwd_changes(tmp_path, monkeypatch):
+    import native_worker_client
+
+    monkeypatch.chdir(tmp_path)
+    payload = native_worker_client._absolutize_worker_payload(
+        {
+            "video_files": ["inputs/video.avi"],
+            "output_csv_folder": "outputs",
+            "alignment_pairs": [["features.csv", "transcript.json", "aligned.csv"]],
+        }
+    )
+
+    assert payload["video_files"] == [str(tmp_path / "inputs" / "video.avi")]
+    assert payload["output_csv_folder"] == str(tmp_path / "outputs")
+    assert payload["alignment_pairs"] == [[
+        str(tmp_path / "features.csv"),
+        str(tmp_path / "transcript.json"),
+        str(tmp_path / "aligned.csv"),
+    ]]
 
 
 def test_packaged_windows_spawn_clears_and_restores_dll_directory(tmp_path, monkeypatch):
@@ -194,6 +251,24 @@ def test_worker_runtime_flags_package_native_modules_outside_worker(tmp_path, mo
 
     assert analysis_worker._native_module_violations(worker_root) == ["_framework_bindings.pyd"]
 
+def test_worker_runtime_rejects_all_non_system_external_modules(tmp_path, monkeypatch):
+    import analysis_worker
+
+    worker_root = tmp_path / "app" / "worker"
+    windows_root = tmp_path / "Windows"
+    worker_root.mkdir(parents=True)
+    (windows_root / "System32").mkdir(parents=True)
+    monkeypatch.setattr(analysis_worker.sys, "platform", "win32")
+    monkeypatch.setattr(analysis_worker.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("SystemRoot", str(windows_root))
+    loaded = [
+        worker_root / "MultiSOCIAL-Worker.exe",
+        windows_root / "System32" / "kernel32.dll",
+        tmp_path / "foreign" / "injected.dll",
+    ]
+
+    assert analysis_worker._external_module_violations(worker_root, loaded) == ["injected.dll"]
+
 
 def test_worker_preloads_pose_runtime_in_mediapipe_then_torch_order(monkeypatch):
     import analysis_worker
@@ -217,6 +292,32 @@ def test_worker_preloads_complete_probe_runtime_on_the_main_thread(monkeypatch):
     analysis_worker._initialize_worker_operation_runtime("probe", {"profile": "complete"})
 
     assert events == ["mediapipe", "cv2", "opensmile", "enable-torch", "torch", "torchaudio", "pyannote.audio"]
+
+def test_worker_preloads_diarization_dependencies_before_provenance_check(monkeypatch):
+    import analysis_worker
+
+    events = []
+    monkeypatch.setattr(
+        analysis_worker,
+        "_import_worker_runtime_module",
+        lambda name: events.append(name),
+    )
+    monkeypatch.setattr(
+        analysis_worker,
+        "_enable_worker_tensor_loader",
+        lambda: events.append("enable-torch"),
+    )
+
+    analysis_worker._initialize_worker_operation_runtime(
+        "extract_transcripts",
+        {"enable_diarization": True},
+    )
+
+    assert events == ["enable-torch", "audio", "torchaudio", "pyannote.audio"]
+    assert "pyannote.audio" in analysis_worker._operation_module_names(
+        "extract_transcripts",
+        {"enable_diarization": True},
+    )
 
 
 def test_staged_output_promotes_only_complete_files(tmp_path):
@@ -244,3 +345,43 @@ def test_staged_output_removes_cancelled_partial_files(tmp_path):
 
     assert not (destination / "partial.csv").exists()
     assert not list(destination.glob(".multisocial-worker-*"))
+
+def test_staged_output_names_are_scoped_to_request_id(tmp_path):
+    from analysis_worker import _StagedOutput
+
+    destination = tmp_path / "destination"
+    with _StagedOutput(str(destination), "request-123") as staged:
+        assert os.path.basename(staged).startswith(
+            ".multisocial-worker-request-123-"
+        )
+
+def test_packaged_smoke_request_writes_redacted_structured_failure(tmp_path, monkeypatch):
+    import worker_backend
+
+    request = tmp_path / "request.json"
+    result = tmp_path / "result.json"
+    request.write_text(
+        '{"operation":"probe","payload":{"profile":"complete"}}',
+        encoding="utf-8",
+    )
+    token = "hf-private-token"
+
+    class FailingClient:
+        def run(self, *_args, **_kwargs):
+            raise RuntimeError(f"model rejected {token}")
+
+    monkeypatch.setattr(worker_backend, "NativeWorkerClient", FailingClient)
+    monkeypatch.setenv(worker_backend.SMOKE_REQUEST_ENV, str(request))
+    monkeypatch.setenv(worker_backend.SMOKE_RESULT_ENV, str(result))
+    monkeypatch.setenv(worker_backend.WORKER_TOKEN_ENV, token)
+
+    with pytest.raises(RuntimeError, match="REDACTED") as exc:
+        worker_backend._run_packaged_smoke_request()
+    assert token not in str(exc.value)
+
+    response = __import__("json").loads(result.read_text(encoding="utf-8"))
+    assert response == {
+        "ok": False,
+        "error": "model rejected [REDACTED]",
+    }
+    assert worker_backend.WORKER_TOKEN_ENV not in os.environ

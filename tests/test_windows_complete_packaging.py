@@ -95,8 +95,14 @@ def test_windows_specs_build_independent_gui_and_console_worker():
     assert "Build native-free Windows GUI" in workflow_source
     assert "Build private Windows worker in a separate process" in workflow_source
     assert "assemble_windows.py" in workflow_source
-    assert "for attempt in $(seq 1 10)" in workflow_source
-    assert "MULTISOCIAL_VERIFY_WORKER_LAUNCH=1" in workflow_source
+    e2e_source = (
+        ROOT / ".github" / "scripts" / "windows_packaged_e2e.py"
+    ).read_text(encoding="utf-8")
+    assert "for attempt in range(1, 11)" in e2e_source
+    request_runner = (
+        ROOT / ".github" / "scripts" / "run_windows_packaged_request.py"
+    ).read_text(encoding="utf-8")
+    assert "MULTISOCIAL_WORKER_SMOKE_REQUEST" in request_runner
     assert "run_windows_complete_e2e" in workflow_source
     assert "MULTISOCIAL_CI_HF_TOKEN" in workflow_source
 

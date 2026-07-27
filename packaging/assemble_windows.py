@@ -6,6 +6,14 @@ import argparse
 import shutil
 from pathlib import Path
 
+def _assert_safe_output(gui: Path, worker: Path, output: Path) -> None:
+    if output in {gui, worker}:
+        raise ValueError("Assembly output must be distinct from both PyInstaller inputs")
+    if output in gui.parents or output in worker.parents:
+        raise ValueError("Assembly output must not contain either PyInstaller input")
+    if gui in output.parents or worker in output.parents:
+        raise ValueError("Assembly output must not be nested inside either PyInstaller input")
+
 
 def _copy_contents(source: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
@@ -18,6 +26,10 @@ def _copy_contents(source: Path, destination: Path) -> None:
 
 
 def assemble(gui: Path, worker: Path, output: Path) -> None:
+    gui = gui.resolve()
+    worker = worker.resolve()
+    output = output.resolve()
+    _assert_safe_output(gui, worker, output)
     if not gui.is_dir() or not worker.is_dir():
         raise FileNotFoundError("Both independent PyInstaller onedir outputs are required")
     if output.exists():

@@ -90,6 +90,24 @@ def _worker_directory(command: list[str]) -> Path:
     return executable.parent
 
 
+def _windows_directory() -> Path:
+    if sys.platform == "win32":
+        try:
+            get_windows_directory = ctypes.windll.kernel32.GetWindowsDirectoryW
+            get_windows_directory.argtypes = [
+                ctypes.POINTER(ctypes.c_wchar),
+                ctypes.c_uint,
+            ]
+            get_windows_directory.restype = ctypes.c_uint
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = get_windows_directory(buffer, len(buffer))
+            if 0 < length < len(buffer):
+                return Path(buffer.value)
+        except (AttributeError, OSError):
+            pass
+    return Path(os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows")
+
+
 def _packaged_windows_environment(command: list[str], token: Optional[str]) -> dict[str, str]:
     env = os.environ.copy()
     if token:
@@ -106,19 +124,75 @@ def _packaged_windows_environment(command: list[str], token: Optional[str]) -> d
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
 
-    path_separator = ";"
-    inherited_path = env.get("PATH", "")
-    clean_entries = [
-        entry
-        for entry in inherited_path.split(path_separator)
-        if entry and not _path_is_within(entry, app_root)
+    windows_root = _windows_directory()
+    env["SystemRoot"] = str(windows_root)
+    env["WINDIR"] = str(windows_root)
+    system_paths = [
+        windows_root / "System32",
+        windows_root,
+        windows_root / "System32" / "Wbem",
+        windows_root / "System32" / "WindowsPowerShell" / "v1.0",
     ]
-    env["PATH"] = path_separator.join([str(worker_dir), *clean_entries])
-
-    inherited_ffmpeg = env.get("MULTISOCIAL_FFMPEG_EXE")
-    if inherited_ffmpeg and _path_is_within(inherited_ffmpeg, app_root):
-        env.pop("MULTISOCIAL_FFMPEG_EXE", None)
+    env["PATH"] = ";".join(
+        dict.fromkeys(str(path) for path in [worker_dir, *system_paths])
+    )
+    env.pop("MULTISOCIAL_FFMPEG_EXE", None)
     return env
+
+
+def _staging_destinations(payload: dict[str, Any]) -> set[Path]:
+    destinations = {
+        Path(value)
+        for key in (
+            "output_csv_folder",
+            "output_video_folder",
+            "output_audio_features_folder",
+            "output_transcripts_folder",
+        )
+        if (value := payload.get(key))
+    }
+    for pair in payload.get("alignment_pairs") or []:
+        if isinstance(pair, (list, tuple)) and len(pair) == 3 and pair[2]:
+            destinations.add(Path(pair[2]).parent)
+    return destinations
+
+
+def _absolutize_worker_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    for key in (
+        "output_csv_folder",
+        "output_video_folder",
+        "output_audio_features_folder",
+        "output_transcripts_folder",
+    ):
+        if value := normalized.get(key):
+            normalized[key] = os.path.abspath(os.fspath(value))
+    for key in ("video_files", "audio_files"):
+        if key in normalized:
+            normalized[key] = [
+                os.path.abspath(os.fspath(value))
+                for value in normalized.get(key) or []
+            ]
+    if "alignment_pairs" in normalized:
+        normalized["alignment_pairs"] = [
+            [os.path.abspath(os.fspath(value)) for value in pair]
+            for pair in normalized.get("alignment_pairs") or []
+        ]
+    return normalized
+
+
+def _cleanup_request_staging(payload: dict[str, Any], request_id: str) -> None:
+    prefix = f".multisocial-worker-{request_id}-"
+    for destination in _staging_destinations(payload):
+        try:
+            candidates = destination.iterdir()
+        except OSError:
+            continue
+        for candidate in candidates:
+            if candidate.is_dir() and candidate.name.startswith(prefix):
+                import shutil
+
+                shutil.rmtree(candidate, ignore_errors=True)
 
 
 def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
@@ -128,14 +202,21 @@ def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
 
     gui_bundle_root = str(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)).resolve())
     kernel32 = ctypes.windll.kernel32
+    set_dll_directory = kernel32.SetDllDirectoryW
+    try:
+        set_dll_directory.argtypes = [ctypes.c_wchar_p]
+        set_dll_directory.restype = ctypes.c_int
+    except AttributeError:
+        # Unit-test fakes are ordinary bound Python methods.
+        pass
     with _WINDOWS_LAUNCH_LOCK:
-        if not kernel32.SetDllDirectoryW(None):
+        if not set_dll_directory(None):
             raise WorkerError("Could not clear the GUI DLL search directory before starting the worker")
         process = None
         try:
             process = subprocess.Popen(command, **kwargs)
         finally:
-            if not kernel32.SetDllDirectoryW(gui_bundle_root):
+            if not set_dll_directory(gui_bundle_root):
                 if process is not None:
                     process.terminate()
                 raise WorkerError("Could not restore the GUI DLL search directory after starting the worker")
@@ -160,6 +241,7 @@ class NativeWorkerClient:
         hf_token: Optional[str] = None,
     ) -> dict[str, Any]:
         request_id = str(uuid.uuid4())
+        payload = _absolutize_worker_payload(payload)
         env = _packaged_windows_environment(self.command, hf_token)
         worker_dir = _worker_directory(self.command)
 
@@ -196,19 +278,19 @@ class NativeWorkerClient:
         threading.Thread(target=read_stdout, daemon=True).start()
         threading.Thread(target=read_stderr, daemon=True).start()
 
-        request = {
-            "protocol": PROTOCOL_VERSION,
-            "id": request_id,
-            "type": "run",
-            "operation": operation,
-            "payload": payload,
-        }
-        process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
-        process.stdin.flush()
-
         cancel_sent = False
         cancel_deadline: Optional[float] = None
         try:
+            request = {
+                "protocol": PROTOCOL_VERSION,
+                "id": request_id,
+                "type": "run",
+                "operation": operation,
+                "payload": payload,
+            }
+            process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+            process.stdin.flush()
+
             while True:
                 if cancel_check and cancel_check() and not cancel_sent:
                     cancel_sent = True
@@ -265,6 +347,7 @@ class NativeWorkerClient:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     process.kill()
+            _cleanup_request_staging(payload, request_id)
 
 
 class WindowsPoseProcessor:

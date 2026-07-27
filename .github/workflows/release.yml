@@ -135,6 +135,8 @@ jobs:
       PIP_NO_CACHE_DIR: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.tmp/pycache-${{ matrix.profile }}-${{ matrix.repetition }}
+      YOLO_AUTOINSTALL: "false"
+      YOLOv5_AUTOINSTALL: "false"
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -147,7 +149,13 @@ jobs:
           set -euo pipefail
           git ls-files --error-unmatch \
             packaging/windows_gui.spec \
-            packaging/windows_worker.spec
+            packaging/windows_worker.spec \
+            packaging/windows_hooks/hook-pyannote.audio.py \
+            packaging/windows_hooks/hook-transformers.py \
+            packaging/windows_hooks/hook-ultralytics.py \
+            packaging/windows_hooks/hook-yolov5.py \
+            .github/scripts/run_windows_packaged_request.py \
+            .github/scripts/windows_packaged_e2e.py
           test -f packaging/windows_gui.spec
           test -f packaging/windows_worker.spec
 
@@ -166,8 +174,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          .venv-gui/Scripts/python.exe packaging/audit_windows_environment.py --kind gui
-          .venv-worker/Scripts/python.exe packaging/audit_windows_environment.py --kind worker
+          .venv-gui/Scripts/python.exe packaging/audit_windows_environment.py \
+            --kind gui --lock requirements/locks/windows-gui-py310.txt
+          .venv-worker/Scripts/python.exe packaging/audit_windows_environment.py \
+            --kind worker --lock "requirements/locks/windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt"
 
       - name: Build native-free Windows GUI
         shell: bash
@@ -188,10 +198,16 @@ jobs:
           PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/worker-pyi-${{ matrix.repetition }}
         run: |
           set -euo pipefail
+          set +e
           .venv-worker/Scripts/python.exe -m PyInstaller --clean --noconfirm \
             --workpath ".tmp/worker-work-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
             --distpath ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
             packaging/windows_worker.spec
+          build_status=$?
+          set -e
+          .venv-worker/Scripts/python.exe packaging/audit_windows_environment.py \
+            --kind worker --lock "requirements/locks/windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt"
+          exit "${build_status}"
 
       - name: Assemble opaque worker runtime under GUI runtime
         shell: bash
@@ -207,50 +223,7 @@ jobs:
             --profile "${MULTISOCIAL_BUILD_PROFILE}"
           python .github/scripts/validate_complete_bundle_layout.py
 
-      - name: Run GUI-to-worker isolated launch and ten cold probes
-        shell: bash
-        run: |
-          set -euo pipefail
-          app_name="MultiSOCIAL-Standard"
-          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
-          gui="dist/${app_name}/${app_name}.exe"
-          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
-          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 \
-            MULTISOCIAL_VERIFY_WORKER_LAUNCH=1 "${gui}"
-          for attempt in $(seq 1 10); do
-            printf '%s\n' '{"protocol":1,"id":"probe-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' |
-              "${worker}" |
-              python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m; r=m[-1]['result']['runtime']['worker_runtime']; assert r['private_runtime'] and not r['loaded_module_violations'],r"
-          done
-
-      - name: Exercise packaged audio and pose native paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          app_name="MultiSOCIAL-Standard"
-          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
-          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
-          mkdir -p .tmp/runtime-fixtures/features .tmp/runtime-fixtures/pose .tmp/runtime-fixtures/embed
-          python -c "import math,wave; p='.tmp/runtime-fixtures/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
-          .venv-worker/Scripts/python.exe -c "import cv2,numpy as np; w=cv2.VideoWriter('.tmp/runtime-fixtures/blank.avi',cv2.VideoWriter_fourcc(*'MJPG'),10,(160,120)); [w.write(np.zeros((120,160,3),dtype=np.uint8)) for _ in range(10)]; w.release()"
-          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav"],"output_audio_features_folder":".tmp/runtime-fixtures/features"}}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
-          test -f .tmp/runtime-fixtures/features/tone.csv
-          mkdir -p .tmp/runtime-fixtures/cancelled
-          printf '%s\n' \
-            '{"protocol":1,"id":"cancel","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav",".tmp/runtime-fixtures/tone.wav"],"output_audio_features_folder":".tmp/runtime-fixtures/cancelled"}}' \
-            '{"protocol":1,"id":"cancel","type":"cancel"}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m; assert m[-1]['result']['cancelled'],m"
-          test -z "$(find .tmp/runtime-fixtures/cancelled -type f -print -quit)"
-          for mode in false true; do
-            printf '%s\n' '{"protocol":1,"id":"pose-'"${mode}"'","type":"run","operation":"extract_pose","payload":{"video_files":[".tmp/runtime-fixtures/blank.avi"],"output_csv_folder":".tmp/runtime-fixtures/pose","multi_person":'"${mode}"'}}' |
-              "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
-          done
-          printf '%s\n' '{"protocol":1,"id":"embed","type":"run","operation":"embed_pose","payload":{"video_files":[".tmp/runtime-fixtures/blank.avi"],"output_csv_folder":".tmp/runtime-fixtures/pose","output_video_folder":".tmp/runtime-fixtures/embed","multi_person":false}}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
-
-      - name: Run canonical packaged Whisper ASR
-        if: matrix.repetition == 1
+      - name: Exercise packaged GUI-to-worker native boundary
         shell: bash
         env:
           MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
@@ -258,10 +231,13 @@ jobs:
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
           [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
-          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
-          mkdir -p .tmp/whisper/transcripts
-          printf '%s\n' '{"protocol":1,"id":"whisper","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav"],"output_transcripts_folder":".tmp/whisper/transcripts","word_timestamps":false,"enable_diarization":false}}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m; assert not m[-1]['result']['failed'],m"
+          options=()
+          [[ "${{ matrix.repetition }}" == "1" ]] && options+=(--include-whisper)
+          python .github/scripts/windows_packaged_e2e.py \
+            --gui "dist/${app_name}/${app_name}.exe" \
+            --profile "${MULTISOCIAL_BUILD_PROFILE}" \
+            --workspace ".tmp/e2e-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
+            "${options[@]}"
 
       - name: Run optional Complete diarization E2E
         if: matrix.repetition == 1 && matrix.profile == 'complete' && (needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e)
@@ -271,11 +247,12 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${MULTISOCIAL_CI_HF_TOKEN}"
-          worker="dist/MultiSOCIAL-Complete/worker/MultiSOCIAL-Worker.exe"
-          mkdir -p .tmp/diarization/transcripts
           export MULTISOCIAL_WORKER_HF_TOKEN="${MULTISOCIAL_CI_HF_TOKEN}"
-          printf '%s\n' '{"protocol":1,"id":"e2e","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav"],"output_transcripts_folder":".tmp/diarization/transcripts","word_timestamps":false,"enable_diarization":true}}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
+          python .github/scripts/windows_packaged_e2e.py \
+            --gui dist/MultiSOCIAL-Complete/MultiSOCIAL-Complete.exe \
+            --profile complete \
+            --workspace .tmp/e2e-complete-1 \
+            --only-diarization
 
       - name: Archive canonical Windows build
         if: matrix.repetition == 1
@@ -284,17 +261,15 @@ jobs:
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
           [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
-          mkdir -p release-artifacts workflow-artifacts
+          mkdir -p release-artifacts
           python -c "import shutil; shutil.make_archive('release-artifacts/${app_name}-windows','zip',root_dir='dist',base_dir='${app_name}')"
-          cp -R "dist/${app_name}" workflow-artifacts/
-          cp "release-artifacts/${app_name}-windows.zip" workflow-artifacts/
 
       - name: Upload canonical Windows workflow artifact
         if: matrix.repetition == 1
         uses: actions/upload-artifact@v5
         with:
           name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}
-          path: workflow-artifacts/*
+          path: release-artifacts/*-windows.zip
 
   windows-client-compat:
     needs: [prepare, windows-build]
@@ -307,6 +282,7 @@ jobs:
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
@@ -320,10 +296,12 @@ jobs:
         run: |
           $installRoot = Join-Path $PWD ".tmp\Installed Apps\Üser Validation"
           New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
-          Get-ChildItem ".tmp\download" | Copy-Item -Destination $installRoot -Recurse
+          $archive = Get-ChildItem ".tmp\download" -Filter "*-windows.zip" | Select-Object -First 1
+          if (-not $archive) { throw "Downloaded Windows ZIP is missing" }
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $installRoot
           "INSTALL_ROOT=$installRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Run downloaded GUI launch, worker probes, and audio smoke
+      - name: Run extracted canonical ZIP through packaged boundary
         shell: bash
         env:
           MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
@@ -332,34 +310,12 @@ jobs:
           app_name="MultiSOCIAL-Standard"
           [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
           gui="$(find "${INSTALL_ROOT}" -name "${app_name}.exe" -type f -print -quit)"
-          worker="$(find "${INSTALL_ROOT}" -name MultiSOCIAL-Worker.exe -type f -print -quit)"
-          test -n "${gui}" && test -n "${worker}"
-          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 \
-            MULTISOCIAL_VERIFY_WORKER_LAUNCH=1 "${gui}"
-          for attempt in $(seq 1 10); do
-            printf '%s\n' '{"protocol":1,"id":"compat-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' |
-              "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
-          done
-          mkdir -p .tmp/compat/features
-          python -c "import math,wave; w=wave.open('.tmp/compat/tone.wav','w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
-          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/compat/tone.wav"],"output_audio_features_folder":".tmp/compat/features"}}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
-          test -f .tmp/compat/features/tone.csv
-          mkdir -p .tmp/compat/cancelled .tmp/compat/pose .tmp/compat/transcripts
-          printf '%s\n' \
-            '{"protocol":1,"id":"cancel","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/compat/tone.wav",".tmp/compat/tone.wav"],"output_audio_features_folder":".tmp/compat/cancelled"}}' \
-            '{"protocol":1,"id":"cancel","type":"cancel"}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result' and m[-1]['result']['cancelled'],m"
-          test -z "$(find .tmp/compat/cancelled -type f -print -quit)"
-          ffmpeg="$(find "$(dirname "${worker}")" -iname 'ffmpeg*.exe' -type f -print -quit)"
-          test -n "${ffmpeg}"
-          "${ffmpeg}" -y -f lavfi -i color=c=black:s=160x120:d=1 -r 10 .tmp/compat/blank.avi
-          for mode in false true; do
-            printf '%s\n' '{"protocol":1,"id":"pose-'"${mode}"'","type":"run","operation":"extract_pose","payload":{"video_files":[".tmp/compat/blank.avi"],"output_csv_folder":".tmp/compat/pose","multi_person":'"${mode}"'}}' |
-              "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
-          done
-          printf '%s\n' '{"protocol":1,"id":"whisper","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/compat/tone.wav"],"output_transcripts_folder":".tmp/compat/transcripts","word_timestamps":false,"enable_diarization":false}}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result' and not m[-1]['result']['failed'],m"
+          test -n "${gui}"
+          python .github/scripts/windows_packaged_e2e.py \
+            --gui "${gui}" \
+            --profile "${MULTISOCIAL_BUILD_PROFILE}" \
+            --workspace ".tmp/compat-${MULTISOCIAL_BUILD_PROFILE}" \
+            --include-whisper
 
       - name: Run qualified Complete diarization after relocation
         if: matrix.profile == 'complete' && (needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e)
@@ -370,11 +326,13 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${MULTISOCIAL_CI_HF_TOKEN}"
-          worker="$(find "${INSTALL_ROOT}" -name MultiSOCIAL-Worker.exe -type f -print -quit)"
-          mkdir -p .tmp/compat/diarized
+          gui="$(find "${INSTALL_ROOT}" -name MultiSOCIAL-Complete.exe -type f -print -quit)"
           export MULTISOCIAL_WORKER_HF_TOKEN="${MULTISOCIAL_CI_HF_TOKEN}"
-          printf '%s\n' '{"protocol":1,"id":"diarization","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/compat/tone.wav"],"output_transcripts_folder":".tmp/compat/diarized","word_timestamps":false,"enable_diarization":true}}' |
-            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result' and not m[-1]['result']['failed'],m"
+          python .github/scripts/windows_packaged_e2e.py \
+            --gui "${gui}" \
+            --profile complete \
+            --workspace .tmp/compat-complete \
+            --only-diarization
 
   publish:
     if: needs.prepare.outputs.should_publish_release == 'true'

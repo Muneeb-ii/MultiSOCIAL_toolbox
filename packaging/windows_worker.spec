@@ -4,10 +4,13 @@ import os
 import sys
 from pathlib import Path
 
+sys.setrecursionlimit(max(sys.getrecursionlimit() * 5, 5000))
+os.environ["YOLO_AUTOINSTALL"] = "false"
+os.environ["YOLOv5_AUTOINSTALL"] = "false"
+
 from PyInstaller.utils.hooks import (
     collect_data_files,
     collect_dynamic_libs,
-    collect_submodules,
     copy_metadata,
 )
 
@@ -15,7 +18,7 @@ from PyInstaller.utils.hooks import (
 SPEC_DIR = Path(globals().get("SPECPATH", Path.cwd() / "packaging")).resolve()
 ROOT = SPEC_DIR.parent if SPEC_DIR.name == "packaging" else SPEC_DIR
 SRC = ROOT / "src"
-HOOKS = ROOT / "hooks"
+WINDOWS_HOOKS = ROOT / "packaging" / "windows_hooks"
 sys.path.insert(0, str(ROOT / "packaging"))
 
 from windows_build_support import (  # noqa: E402
@@ -24,17 +27,18 @@ from windows_build_support import (  # noqa: E402
     collect_vc_runtime_binaries,
     filter_vc_runtime_entries,
 )
-from windows_hiddenimports import COMPLETE_HIDDEN_IMPORTS, STANDARD_HIDDEN_IMPORTS  # noqa: E402
+from windows_hiddenimports import (  # noqa: E402
+    COMPLETE_HIDDEN_IMPORTS,
+    STANDARD_HIDDEN_IMPORTS,
+    YOLOV5_INFERENCE_HIDDEN_IMPORTS,
+)
 
 profile = os.environ.get("MULTISOCIAL_BUILD_PROFILE", "standard").strip().lower()
 if profile not in {"standard", "complete"}:
     raise RuntimeError(f"Unsupported Windows worker profile: {profile}")
 
 hiddenimports = list(STANDARD_HIDDEN_IMPORTS)
-# YOLOv5 7.0.14 uses filesystem-driven module discovery. Keep this isolated
-# to the worker process; the native-free GUI environment does not install it.
-hiddenimports += collect_submodules("yolov5")
-hiddenimports += collect_submodules("ultralytics")
+hiddenimports += YOLOV5_INFERENCE_HIDDEN_IMPORTS
 
 datas = [
     (str(ROOT / "assets" / "yolov5s.pt"), "assets"),
@@ -49,7 +53,6 @@ for package in (
     "audinterface",
     "audresample",
     "imageio_ffmpeg",
-    "lightning_fabric",
     "mediapipe",
     "opensmile",
     "ultralytics",
@@ -63,10 +66,7 @@ for package in (
     "ultralytics",
     "yolov5",
 ):
-    try:
-        datas += copy_metadata(package)
-    except Exception:
-        pass
+    datas += copy_metadata(package)
 
 binaries = []
 for package in ("audinterface", "audresample", "mediapipe", "opensmile", "soundfile"):
@@ -75,6 +75,7 @@ for package in ("audinterface", "audresample", "mediapipe", "opensmile", "soundf
 if profile == "complete":
     hiddenimports += COMPLETE_HIDDEN_IMPORTS
     for package in (
+        "lightning_fabric",
         "huggingface_hub",
         "pyannote",
         "pytorch_lightning",
@@ -92,10 +93,7 @@ if profile == "complete":
         "torchaudio",
         "torchmetrics",
     ):
-        try:
-            datas += copy_metadata(package)
-        except Exception:
-            pass
+        datas += copy_metadata(package)
 
 vc_binaries = collect_vc_runtime_binaries()
 approved_sources = approved_vc_sources(vc_binaries)
@@ -107,7 +105,7 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[str(HOOKS)],
+    hookspath=[str(WINDOWS_HOOKS)],
     hooksconfig={"matplotlib": {"backends": ["Agg"]}},
     runtime_hooks=[str(SRC / "runtime_hook_dlls.py")],
     excludes=["wx", "transformers.quantizers"],
