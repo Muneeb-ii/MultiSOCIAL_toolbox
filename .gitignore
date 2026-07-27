@@ -221,6 +221,7 @@ venv/
 .tokensave/
 CONTEXT.md
 ISSUES.md
+IMPROVEMENTS.md
 
 # Testing Workflows
 /audio-test

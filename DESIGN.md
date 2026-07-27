@@ -184,6 +184,7 @@ Entry point: `gui_utils.create_transparent_text()` — `TransparentStaticText` o
 4. **Single font-scaling registry** — register `(widget, base_size, bold)` at creation; scale in one `on_resize` loop (max 2× baseline). The loop is per-widget defensive (proxies without `IsShown` are allowed; one failure never aborts the pass).
 5. **Windows gradient under cards** — keep `GlassPanel._paint_gradient_background_windows`; owner-drawn children sit on top.
 6. **Adding a new control** — if it is clickable, owner-draw it **and call `_fill_windows_background` at the top of its paint**; if native (picker/spin), put it in a `SectionCard` + `style_native_input`; register fonts in `_scalable_widgets`.
+7. **Keep Windows native analysis outside the GUI process.** The GUI retains the same controls, progress, dialogs, and output contracts, but launches the private `MultiSOCIAL-Worker.exe` for native pose and audio work. Do not add eager Torch, MediaPipe, OpenCV, OpenSMILE, SpeechBrain, or pyannote imports back to `app.py`; macOS remains in-process.
 
 ## Cancel UX (#17)
 

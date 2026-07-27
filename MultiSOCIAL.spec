@@ -134,6 +134,20 @@ def filter_blocked_runtime_dlls(entries, blocked_names, allowed_sources):
         filtered.append(entry)
     return filtered
 
+
+def merge_collection_entries(*groups):
+    """Merge TOC entries by destination, keeping the first deterministic source."""
+    merged = []
+    destinations = set()
+    for group in groups:
+        for entry in group:
+            destination = str(entry[0]).replace("\\", "/").casefold() if isinstance(entry, tuple) and entry else repr(entry)
+            if destination in destinations:
+                continue
+            destinations.add(destination)
+            merged.append(entry)
+    return merged
+
 hiddenimports = [
     "backports",
     "backports.tarfile",
@@ -277,7 +291,9 @@ a = Analysis(
             "backends": ["Agg"],
         },
     },
-    runtime_hooks=[os.path.join(SRC, "runtime_hook_dlls.py")],
+    # The GUI must stay free of broad native-DLL setup. The Windows console
+    # worker configures scoped loader handles after it has started.
+    runtime_hooks=[] if IS_WINDOWS else [os.path.join(SRC, "runtime_hook_dlls.py")],
     excludes=[],
     noarchive=False,
 )
@@ -293,6 +309,41 @@ if yolov5_general_spec is not None and yolov5_general_spec.origin:
     a.datas.append(("yolov5/utils/general.pyc", yolov5_general_spec.origin, "DATA"))
 
 pyz = PYZ(a.pure)
+
+worker_exe = None
+if IS_WINDOWS:
+    worker_a = Analysis(
+        [os.path.join(SRC, "analysis_worker.py")],
+        pathex=[ROOT, SRC],
+        # This is a separate Python module graph from the GUI. Give it the
+        # same explicit native sidecars and data, then merge its resolved TOC
+        # into the final bundle below. Relying on incidental GUI overlap makes
+        # MediaPipe's DLL closure nondeterministic on newer Windows images.
+        binaries=binaries,
+        datas=datas,
+        hiddenimports=hiddenimports,
+        hookspath=[HOOKS],
+        hooksconfig={"matplotlib": {"backends": ["Agg"]}},
+        runtime_hooks=[],
+        excludes=[],
+        noarchive=False,
+    )
+    worker_a.binaries = filter_blocked_runtime_dlls(worker_a.binaries, _blocked_runtime_dlls, allowed_runtime_sources)
+    worker_a.datas = filter_blocked_runtime_dlls(worker_a.datas, _blocked_runtime_dlls, allowed_runtime_sources)
+    worker_pyz = PYZ(worker_a.pure)
+    worker_exe = EXE(
+        worker_pyz,
+        worker_a.scripts,
+        [],
+        exclude_binaries=True,
+        name="MultiSOCIAL-Worker",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=True,
+        contents_directory='.',
+    )
 
 if IS_MACOS:
     exe = EXE(
@@ -346,9 +397,10 @@ else:
     )
     coll = COLLECT(
         exe,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
+        *([worker_exe] if worker_exe is not None else []),
+        merge_collection_entries(a.binaries, worker_a.binaries) if worker_exe is not None else a.binaries,
+        merge_collection_entries(a.zipfiles, worker_a.zipfiles) if worker_exe is not None else a.zipfiles,
+        merge_collection_entries(a.datas, worker_a.datas) if worker_exe is not None else a.datas,
         strip=False,
         upx=not IS_WINDOWS,
         upx_exclude=[],

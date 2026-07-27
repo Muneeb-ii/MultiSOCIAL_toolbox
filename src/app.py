@@ -26,6 +26,12 @@ load_dotenv()
 
 import gui_utils
 import runtime_services
+from native_worker_client import (
+    WindowsAudioProcessor,
+    WindowsPoseProcessor,
+    find_pose_csv_paths,
+    is_windows_worker_enabled,
+)
 from gui_utils import Theme
 from ui_components import (
     GradientPanel,
@@ -48,6 +54,8 @@ def _get_pose_processor_class():
     global _PoseProcessorCls
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
         return None
+    if is_windows_worker_enabled():
+        return WindowsPoseProcessor
     if _PoseProcessorCls is None:
         from pose import PoseProcessor
 
@@ -58,7 +66,10 @@ def _get_pose_processor_class():
 # Keep packaged import smoke test lightweight by avoiding heavy ML/native imports.
 if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
     gui_utils.ensure_ffmpeg_available()
-    from audio import AudioProcessor
+    if is_windows_worker_enabled():
+        AudioProcessor = WindowsAudioProcessor
+    else:
+        from audio import AudioProcessor
 else:
     AudioProcessor = None
 
@@ -1577,8 +1588,6 @@ class VideoToWavConverter(wx.Frame):
         failed = False
         failures = []
         try:
-            from pose import find_pose_csv_paths
-
             total_files = len(video_files)
             multi_person = bool(getattr(pose_processor, "enable_multi_person_pose", False))
             mode_label = "multi-person" if multi_person else "single-person"
@@ -1652,8 +1661,6 @@ class VideoToWavConverter(wx.Frame):
                 "No Videos Found", wx.OK | wx.ICON_INFORMATION,
             )
             return
-
-        from pose import find_pose_csv_paths
 
         multi_person = bool(
             hasattr(self, "multiPersonCheckbox") and self.multiPersonCheckbox.GetValue()
@@ -2289,7 +2296,7 @@ def main():
                 sys.exit(1)
             print("Bundled Heavy pose model check passed.", flush=True)
         profile = runtime_services.get_build_profile().lower()
-        if profile == "complete":
+        if profile == "complete" and not is_windows_worker_enabled():
             try:
                 runtime_services.preload_frozen_windows_diarization_dependencies()
                 import pyannote.audio

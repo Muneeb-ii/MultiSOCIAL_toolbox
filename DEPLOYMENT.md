@@ -4,8 +4,8 @@ This document is for maintainers and contributors using the automated MultiSOCIA
 
 ## Release model
 
-- Fork tags are for contributor test builds.
-- Push a tag like `v1.0.0-test1` in your fork to produce build artifacts in your fork's Actions run.
+- Fork tags are for contributor test builds. Commit the intended changes in the fork, then push a tag such as `v1.2.2-test1`; GitHub Actions starts automatically.
+- A fork tag creates **exactly four** downloadable test artifacts: macOS and Windows, each in `Standard` and `Complete` profiles. It never creates an upstream release record or publishes user-facing release assets.
 - Merges to `upstream/main` automatically build the official desktop release using the exact version in `pyproject.toml` at merge time.
 - GitHub Actions workflow: `.github/workflows/release.yml`
 - Official user downloads are the assets attached to **GitHub Releases** on the upstream repository.
@@ -66,6 +66,7 @@ Post-build checks:
 - Release workflow verifies the Heavy model path on Standard and Complete artifacts.
 - Packaged import smoke test runs with `MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1` so missing Heavy aborts startup.
 - macOS builds assert Info.plist version matches `pyproject.toml`.
+- Windows builds run the private `MultiSOCIAL-Worker.exe` probe and OpenSMILE audio smoke after packaging; the same built Windows artifacts are then exercised on a Windows 2022 x64 compatibility runner. These checks do not create additional user-visible artifacts.
 
 ## Testing workflow before upstream release
 
@@ -75,8 +76,8 @@ Recommended flow for contributors:
 2. Create a temporary test tag on the fork, for example:
 
 ```bash
-git tag v1.2.1-test1
-git push origin v1.2.1-test1
+git tag v1.2.2-test1
+git push origin v1.2.2-test1
 ```
 
 3. Let GitHub Actions build the test artifacts in your fork.

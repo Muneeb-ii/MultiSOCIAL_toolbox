@@ -5,6 +5,12 @@ env:
 
 on:
   workflow_dispatch:
+    inputs:
+      run_windows_complete_e2e:
+        description: Run the secret-backed Windows Complete diarization smoke test (fork only).
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -117,7 +123,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # Pin the production Windows artifact to the current Windows 11-family
+        # x64 image. A separate job below executes that exact artifact on the
+        # Windows 10-family compatibility image; no extra release artifacts.
+        os: [windows-2025, macos-latest]
         profile: [standard, complete]
 
     runs-on: ${{ matrix.os }}
@@ -148,14 +157,26 @@ jobs:
         run: python -m pip install --upgrade pip
 
       - name: Pin setuptools for PyInstaller runtime hook compatibility
+        if: runner.os != 'Windows'
         run: python -m pip install "setuptools==80.10.2"
 
+      - name: Verify committed Windows release lock
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "requirements/locks/windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt"
+
+      - name: Install Windows release lock
+        if: runner.os == 'Windows'
+        run: python -m pip install --require-hashes -r "requirements/locks/windows-${{ matrix.profile }}-py310.txt"
+
       - name: Install standard build dependencies
-        if: matrix.profile == 'standard'
+        if: matrix.profile == 'standard' && runner.os != 'Windows'
         run: python -m pip install ".[dev]"
 
       - name: Install complete build dependencies
-        if: matrix.profile == 'complete'
+        if: matrix.profile == 'complete' && runner.os != 'Windows'
         run: python -m pip install ".[complete,dev]"
 
       - name: Build PyInstaller bundle
@@ -247,6 +268,49 @@ jobs:
 
           MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 "${target}"
 
+      - name: Run packaged Windows analysis worker probe
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+          worker="dist/${app_name}/MultiSOCIAL-Worker.exe"
+          test -f "${worker}"
+          printf '%s\n' '{"protocol":1,"id":"probe","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages and messages[-1]['event']=='result', messages"
+
+      - name: Run packaged Windows audio-feature worker smoke
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            app_name="MultiSOCIAL-Complete"
+          fi
+          worker="dist/${app_name}/MultiSOCIAL-Worker.exe"
+          mkdir -p .tmp/worker-smoke/features
+          python -c "import math,wave; p='.tmp/worker-smoke/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/worker-smoke/tone.wav"],"output_audio_features_folder":".tmp/worker-smoke/features"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
+          test -f .tmp/worker-smoke/features/tone.csv
+
+      - name: Run manual Windows Complete diarization worker E2E
+        if: github.repository == 'Muneeb-ii/MultiSOCIAL_toolbox' && runner.os == 'Windows' && matrix.profile == 'complete' && inputs.run_windows_complete_e2e
+        shell: bash
+        env:
+          MULTISOCIAL_CI_HF_TOKEN: ${{ secrets.MULTISOCIAL_CI_HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${MULTISOCIAL_CI_HF_TOKEN}"
+          app_name="MultiSOCIAL-Complete"
+          worker="dist/${app_name}/MultiSOCIAL-Worker.exe"
+          mkdir -p .tmp/worker-e2e/transcripts
+          python -c "import math,wave; p='.tmp/worker-e2e/silence.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          export MULTISOCIAL_WORKER_HF_TOKEN="${MULTISOCIAL_CI_HF_TOKEN}"
+          printf '%s\n' '{"protocol":1,"id":"e2e","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/worker-e2e/silence.wav"],"output_transcripts_folder":".tmp/worker-e2e/transcripts","word_timestamps":false,"enable_diarization":true}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
+
       - name: Archive release bundle
         shell: bash
         env:
@@ -303,7 +367,7 @@ jobs:
           fi
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}
           path: workflow-artifacts/*
@@ -314,3 +378,74 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           files: release-artifacts/*
+
+  windows-client-compat:
+    # Execute the release-built Windows x64 bundles on the Windows 10-family
+    # runner. This is deliberately a runtime check, not a second artifact build.
+    if: ${{ needs.build.result == 'success' && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
+    needs: [prepare, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [standard, complete]
+    runs-on: windows-2022
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+      MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Download release-built Windows bundle
+        uses: actions/download-artifact@v5
+        with:
+          name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-Windows
+          path: .tmp/windows-client-bundle
+
+      - name: Validate Windows x64 compatibility host
+        shell: pwsh
+        run: |
+          $version = [Environment]::OSVersion.Version
+          if (-not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) { throw "Windows x64 is required" }
+          if ($version.Major -lt 10) { throw "Windows 10 or later is required" }
+          Write-Host "Compatibility host: $([Environment]::OSVersion.VersionString) ($env:PROCESSOR_ARCHITECTURE)"
+
+      - name: Run downloaded GUI import smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then app_name="MultiSOCIAL-Complete"; fi
+          gui="$(find .tmp/windows-client-bundle -name "${app_name}.exe" -type f -print -quit)"
+          test -n "${gui}"
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 "${gui}"
+
+      - name: Run downloaded Windows worker probe and audio smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          worker="$(find .tmp/windows-client-bundle -name MultiSOCIAL-Worker.exe -type f -print -quit)"
+          test -n "${worker}"
+          printf '%s\n' '{"protocol":1,"id":"probe","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; result=messages[-1]['result']; runtime=result['runtime']; assert messages[-1]['event']=='result', messages; assert runtime['architecture']=='x64' and runtime['windows_major'] >= 10, runtime"
+          mkdir -p .tmp/windows-client-smoke/features
+          python -c "import math,wave; p='.tmp/windows-client-smoke/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/windows-client-smoke/tone.wav"],"output_audio_features_folder":".tmp/windows-client-smoke/features"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
+          test -f .tmp/windows-client-smoke/features/tone.csv
+
+      - name: Run manual Windows 10-family Complete diarization E2E
+        if: github.repository == 'Muneeb-ii/MultiSOCIAL_toolbox' && matrix.profile == 'complete' && inputs.run_windows_complete_e2e
+        shell: bash
+        env:
+          MULTISOCIAL_CI_HF_TOKEN: ${{ secrets.MULTISOCIAL_CI_HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${MULTISOCIAL_CI_HF_TOKEN}"
+          worker="$(find .tmp/windows-client-bundle -name MultiSOCIAL-Worker.exe -type f -print -quit)"
+          mkdir -p .tmp/windows-client-e2e/transcripts
+          python -c "import math,wave; p='.tmp/windows-client-e2e/silence.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          export MULTISOCIAL_WORKER_HF_TOKEN="${MULTISOCIAL_CI_HF_TOKEN}"
+          printf '%s\n' '{"protocol":1,"id":"e2e","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/windows-client-e2e/silence.wav"],"output_transcripts_folder":".tmp/windows-client-e2e/transcripts","word_timestamps":false,"enable_diarization":true}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"

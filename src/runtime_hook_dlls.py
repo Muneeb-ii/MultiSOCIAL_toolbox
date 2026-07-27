@@ -1,4 +1,4 @@
-"""Runtime hook for the frozen application's Windows-native dependencies."""
+"""Windows-native setup used only by the private console analysis worker."""
 
 from __future__ import annotations
 
@@ -8,14 +8,10 @@ import sys
 
 _DLL_DIR_HANDLES = []
 
-# Keep DLL lookup deterministic.  Adding every directory containing a DLL to
-# PATH lets unrelated packages win filename collisions during native imports.
-_DLL_DIRECTORY_RELATIVE_PATHS = (
+# Keep DLL lookup deterministic without changing PATH. The GUI never imports
+# this module; the isolated worker holds these loader handles for its lifetime.
+_BASE_DLL_DIRECTORY_RELATIVE_PATHS = (
     ".",
-    "torch/lib",
-    "torchvision",
-    "torchaudio",
-    "torchaudio/lib",
     "mediapipe",
     "mediapipe/python",
     "opensmile/core/bin/win_amd64",
@@ -27,12 +23,24 @@ _DLL_DIRECTORY_RELATIVE_PATHS = (
     "cv2",
 )
 
+_TENSOR_DLL_DIRECTORY_RELATIVE_PATHS = (
+    "torch/lib",
+    "torchvision",
+    "torchaudio",
+    "torchaudio/lib",
+)
+_DLL_DIRECTORY_RELATIVE_PATHS = (*_BASE_DLL_DIRECTORY_RELATIVE_PATHS, *_TENSOR_DLL_DIRECTORY_RELATIVE_PATHS)
+_REGISTERED_DLL_DIRECTORIES = set()
 
-def bundled_dll_directories(bundle_root: str) -> list[str]:
-    """Return existing native-library directories in their required order."""
+
+def bundled_dll_directories(bundle_root: str, *, include_tensor_runtime: bool = True) -> list[str]:
+    """Return known bundle-native directories in their required import phase."""
     directories = []
     seen = set()
-    for relative_path in _DLL_DIRECTORY_RELATIVE_PATHS:
+    relative_paths = _BASE_DLL_DIRECTORY_RELATIVE_PATHS
+    if include_tensor_runtime:
+        relative_paths = (*relative_paths, *_TENSOR_DLL_DIRECTORY_RELATIVE_PATHS)
+    for relative_path in relative_paths:
         directory = os.path.normcase(os.path.abspath(os.path.join(bundle_root, relative_path)))
         if directory not in seen and os.path.isdir(directory):
             directories.append(directory)
@@ -40,40 +48,19 @@ def bundled_dll_directories(bundle_root: str) -> list[str]:
     return directories
 
 
-def configure_windows_dll_search_path(bundle_root: str) -> list[str]:
-    """Add only the known bundle-native directories to the Windows loader."""
-    directories = bundled_dll_directories(bundle_root)
+def configure_windows_dll_search_path(bundle_root: str, *, include_tensor_runtime: bool = True) -> list[str]:
+    """Add known directories; defer Torch until MediaPipe has initialized."""
+    directories = bundled_dll_directories(bundle_root, include_tensor_runtime=include_tensor_runtime)
     for directory in directories:
+        if directory in _REGISTERED_DLL_DIRECTORIES:
+            continue
         try:
             _DLL_DIR_HANDLES.append(os.add_dll_directory(directory))
+            _REGISTERED_DLL_DIRECTORIES.add(directory)
         except OSError:
             pass
-    if directories:
-        current_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = os.pathsep.join(directories + [current_path])
     return directories
 
-
-def _preload_torch_before_gui() -> None:
-    """Initialize Torch's native libraries before the app imports wx.
-
-    Importing a Qt/wx GUI stack before Torch has made Torch's native
-    initialization crash on Windows (pytorch/pytorch#166628), and the app
-    imports ``wx`` at module load before any Torch use.  This runtime hook
-    runs before ``app.py``, so importing Torch here guarantees the safe
-    order regardless of undefined AddDllDirectory search order.  Scoped to
-    the frozen Complete build, whose diarization stack is where the crash
-    appears; the Standard build's startup is left unchanged.
-    """
-    import torch  # noqa: F401
-
-
-if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-    _bundle_root = getattr(sys, "_MEIPASS", None)
-    if _bundle_root and os.path.isdir(_bundle_root):
-        configure_windows_dll_search_path(_bundle_root)
-        if "complete" in os.path.basename(sys.executable).lower():
-            _preload_torch_before_gui()
 
 
 # SpeechBrain uses os.listdir(os.path.dirname(__file__)) to discover modules
