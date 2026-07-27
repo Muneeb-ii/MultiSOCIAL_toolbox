@@ -197,7 +197,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; required=['audresample/core/bin/win_amd64/audresample.dll','opensmile/core/bin/win_amd64/SMILEapi.dll']; missing=[path for path in required if not (root / path).exists()]; mediapipe_hits=list(root.rglob('_framework_bindings*.pyd')); (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if not root.exists() else None; (print('Missing bundled native libraries:', file=sys.stderr), [print(f'  - {path}', file=sys.stderr) for path in missing], sys.exit(1)) if missing else None; (print('Missing mediapipe _framework_bindings binary.', file=sys.stderr), sys.exit(1)) if not mediapipe_hits else None; print('Windows native library layout validation passed.')"
+          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; worker=root/'worker'; required=['audresample/core/bin/win_amd64/audresample.dll','opensmile/core/bin/win_amd64/SMILEapi.dll']; missing=[path for path in required if not (worker / path).exists()]; mediapipe_hits=list(worker.rglob('_framework_bindings*.pyd')); gui_native=[name for name in ('mediapipe','torch','opensmile','cv2') if (root / name).exists()]; (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if not root.exists() else None; (print('Private worker executable missing.', file=sys.stderr), sys.exit(1)) if not (worker/'MultiSOCIAL-Worker.exe').is_file() else None; (print('Missing worker-native libraries:', file=sys.stderr), [print(f'  - {path}', file=sys.stderr) for path in missing], sys.exit(1)) if missing else None; (print('Missing worker MediaPipe _framework_bindings binary.', file=sys.stderr), sys.exit(1)) if not mediapipe_hits else None; (print('GUI contains worker-native package directories:', file=sys.stderr), [print(f'  - {name}', file=sys.stderr) for name in gui_native], sys.exit(1)) if gui_native else None; print('Windows private worker layout validation passed.')"
 
       - name: Validate macOS app symlink integrity
         if: runner.os == 'macOS'
@@ -240,7 +240,7 @@ jobs:
             app_name="MultiSOCIAL-Complete"
           fi
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            root="dist/${app_name}"
+            root="dist/${app_name}/worker"
           else
             root="dist/${app_name}.app"
           fi
@@ -277,9 +277,12 @@ jobs:
           if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
             app_name="MultiSOCIAL-Complete"
           fi
-          worker="dist/${app_name}/MultiSOCIAL-Worker.exe"
+          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
           test -f "${worker}"
-          printf '%s\n' '{"protocol":1,"id":"probe","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages and messages[-1]['event']=='result', messages"
+          for attempt in $(seq 1 10); do
+            echo "Worker probe ${attempt}/10"
+            printf '%s\n' '{"protocol":1,"id":"probe-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages and messages[-1]['event']=='result', messages; runtime=messages[-1]['result']['runtime']; assert runtime['worker_runtime']['private_runtime'], runtime; assert runtime['worker_runtime']['mediapipe_bindings'], runtime"
+          done
 
       - name: Run packaged Windows audio-feature worker smoke
         if: runner.os == 'Windows'
@@ -290,7 +293,7 @@ jobs:
           if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
             app_name="MultiSOCIAL-Complete"
           fi
-          worker="dist/${app_name}/MultiSOCIAL-Worker.exe"
+          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
           mkdir -p .tmp/worker-smoke/features
           python -c "import math,wave; p='.tmp/worker-smoke/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
           printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/worker-smoke/tone.wav"],"output_audio_features_folder":".tmp/worker-smoke/features"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
@@ -305,7 +308,7 @@ jobs:
           set -euo pipefail
           test -n "${MULTISOCIAL_CI_HF_TOKEN}"
           app_name="MultiSOCIAL-Complete"
-          worker="dist/${app_name}/MultiSOCIAL-Worker.exe"
+          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
           mkdir -p .tmp/worker-e2e/transcripts
           python -c "import math,wave; p='.tmp/worker-e2e/silence.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
           export MULTISOCIAL_WORKER_HF_TOKEN="${MULTISOCIAL_CI_HF_TOKEN}"
@@ -430,7 +433,10 @@ jobs:
           set -euo pipefail
           worker="$(find .tmp/windows-client-bundle -name MultiSOCIAL-Worker.exe -type f -print -quit)"
           test -n "${worker}"
-          printf '%s\n' '{"protocol":1,"id":"probe","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; result=messages[-1]['result']; runtime=result['runtime']; assert messages[-1]['event']=='result', messages; assert runtime['architecture']=='x64' and runtime['windows_major'] >= 10, runtime"
+          for attempt in $(seq 1 10); do
+            echo "Downloaded worker probe ${attempt}/10"
+            printf '%s\n' '{"protocol":1,"id":"probe-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; result=messages[-1]['result']; runtime=result['runtime']; assert messages[-1]['event']=='result', messages; assert runtime['architecture']=='x64' and runtime['windows_major'] >= 10, runtime; assert runtime['worker_runtime']['private_runtime'], runtime; assert runtime['worker_runtime']['mediapipe_bindings'], runtime"
+          done
           mkdir -p .tmp/windows-client-smoke/features
           python -c "import math,wave; p='.tmp/windows-client-smoke/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
           printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/windows-client-smoke/tone.wav"],"output_audio_features_folder":".tmp/windows-client-smoke/features"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"

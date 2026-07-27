@@ -52,10 +52,26 @@ def test_windows_spec_builds_console_worker_and_workflow_probes_it():
 
     assert 'name="MultiSOCIAL-Worker"' in spec_source
     assert "console=True" in spec_source
-    assert "binaries=binaries" in spec_source
-    assert "datas=datas" in spec_source
-    assert "merge_collection_entries(a.binaries, worker_a.binaries)" in spec_source
+    assert "gui_hiddenimports" in spec_source
+    assert "worker_hiddenimports" in spec_source
+    assert "gui_binaries = msvc_runtime_binaries" in spec_source
+    assert 'gui_excludes = ["audio", "pose"]' in spec_source
+    assert "prefix_collection_entries" in spec_source
+    assert '"worker/MultiSOCIAL-Worker.exe"' in spec_source
+    assert "merge_collection_entries(a.binaries, worker_a.binaries)" not in spec_source
     assert "Run packaged Windows analysis worker probe" in workflow_source
     assert "Run packaged Windows audio-feature worker smoke" in workflow_source
+    assert "Worker probe ${attempt}/10" in workflow_source
+    assert "Downloaded worker probe ${attempt}/10" in workflow_source
+    assert "/worker/MultiSOCIAL-Worker.exe" in workflow_source
     assert "run_windows_complete_e2e" in workflow_source
     assert "MULTISOCIAL_CI_HF_TOKEN" in workflow_source
+
+
+def test_worker_initializes_native_modules_before_starting_the_operation_thread():
+    worker_source = (ROOT / "src" / "analysis_worker.py").read_text(encoding="utf-8")
+
+    assert "_initialize_worker_operation_runtime(operation, payload)" in worker_source
+    assert worker_source.index("_initialize_worker_operation_runtime(operation, payload)") < worker_source.index(
+        "threading.Thread(target=run_operation, daemon=True).start()"
+    )

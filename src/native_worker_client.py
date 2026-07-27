@@ -54,7 +54,7 @@ def _redact(value: str, token: Optional[str]) -> str:
 def worker_command() -> list[str]:
     """Locate the bundled console worker, or run it from source for tests."""
     if getattr(sys, "frozen", False):
-        candidate = Path(sys.executable).with_name("MultiSOCIAL-Worker.exe")
+        candidate = Path(sys.executable).parent / "worker" / "MultiSOCIAL-Worker.exe"
         if not candidate.is_file():
             raise WorkerError(f"Bundled analysis worker is missing: {candidate.name}")
         return [str(candidate)]

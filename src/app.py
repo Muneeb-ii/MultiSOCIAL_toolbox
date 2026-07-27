@@ -2288,9 +2288,15 @@ class VideoToWavConverter(wx.Frame):
 def main():
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
         if os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1":
-            heavy_model = runtime_services.resource_path(
-                "mediapipe", "modules", "pose_landmark", "pose_landmark_heavy.tflite"
-            )
+            if is_windows_worker_enabled() and getattr(sys, "frozen", False):
+                heavy_model = os.path.join(
+                    os.path.dirname(sys.executable), "worker", "mediapipe", "modules",
+                    "pose_landmark", "pose_landmark_heavy.tflite",
+                )
+            else:
+                heavy_model = runtime_services.resource_path(
+                    "mediapipe", "modules", "pose_landmark", "pose_landmark_heavy.tflite"
+                )
             if not os.path.isfile(heavy_model):
                 print(f"ERROR: Missing bundled Heavy pose model: {heavy_model}", file=sys.stderr, flush=True)
                 sys.exit(1)

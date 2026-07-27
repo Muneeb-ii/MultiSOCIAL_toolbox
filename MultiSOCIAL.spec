@@ -148,6 +148,24 @@ def merge_collection_entries(*groups):
             merged.append(entry)
     return merged
 
+def prefix_collection_entries(prefix, entries):
+    """Relocate a complete child runtime below ``prefix`` in COLLECT.
+
+    The private Windows worker is a separate onedir application.  Prefixing
+    every file (rather than merging it with the GUI's TOC) keeps its native
+    DLL closure physically separate from wxPython and the GUI process.
+    """
+    prefixed = []
+    for entry in entries:
+        if not isinstance(entry, tuple) or len(entry) < 3:
+            continue
+        destination, source, typecode = entry
+        if typecode == "OPTION":
+            continue
+        destination = str(destination).replace("\\", "/").lstrip("/")
+        prefixed.append((f"{prefix}/{destination}", source, typecode))
+    return prefixed
+
 hiddenimports = [
     "backports",
     "backports.tarfile",
@@ -279,12 +297,47 @@ if BUILD_PROFILE == "complete":
     datas += collect_data_files("pytorch_lightning")
     datas += collect_data_files("torchaudio")
 
+# The full graph is required by the in-process macOS application and by the
+# private Windows worker.  Windows GUI builds use the narrow graph below so
+# their DLLs cannot shadow a worker dependency at runtime.
+worker_hiddenimports = hiddenimports
+worker_datas = datas
+worker_binaries = binaries
+
+if IS_WINDOWS:
+    gui_hiddenimports = [
+        "backports",
+        "backports.tarfile",
+        "pkg_resources",
+        "wx.adv",
+        "wx.lib.stattext",
+        "imageio_ffmpeg",
+    ]
+    gui_datas = [
+        (os.path.join(ROOT, "assets"), "assets"),
+        (os.path.join(ROOT, "env.example"), "."),
+        (os.path.join(ROOT, "pyproject.toml"), "."),
+    ]
+    gui_datas += collect_data_files("imageio_ffmpeg")
+    # Keep only the approved VC redistributable beside the GUI.  PyInstaller
+    # still discovers wxPython's own extension modules from the GUI graph.
+    gui_binaries = msvc_runtime_binaries
+    # app.py references these only in the macOS branch. Excluding their roots
+    # stops static analysis from pulling the entire native ML graph back into
+    # the Windows GUI bundle.
+    gui_excludes = ["audio", "pose"]
+else:
+    gui_hiddenimports = worker_hiddenimports
+    gui_datas = worker_datas
+    gui_binaries = worker_binaries
+    gui_excludes = []
+
 a = Analysis(
     [os.path.join(SRC, "app.py")],
     pathex=[ROOT, SRC],
-    binaries=binaries,
-    datas=datas,
-    hiddenimports=hiddenimports,
+    binaries=gui_binaries,
+    datas=gui_datas,
+    hiddenimports=gui_hiddenimports,
     hookspath=[HOOKS],
     hooksconfig={
         "matplotlib": {
@@ -294,7 +347,7 @@ a = Analysis(
     # The GUI must stay free of broad native-DLL setup. The Windows console
     # worker configures scoped loader handles after it has started.
     runtime_hooks=[] if IS_WINDOWS else [os.path.join(SRC, "runtime_hook_dlls.py")],
-    excludes=[],
+    excludes=gui_excludes,
     noarchive=False,
 )
 # Also filter VC runtime DLLs from auto-collected binaries (e.g., wx package
@@ -306,7 +359,11 @@ if IS_WINDOWS:
 
 yolov5_general_spec = find_spec("yolov5.utils.general")
 if yolov5_general_spec is not None and yolov5_general_spec.origin:
-    a.datas.append(("yolov5/utils/general.pyc", yolov5_general_spec.origin, "DATA"))
+    yolov5_general_data = ("yolov5/utils/general.pyc", yolov5_general_spec.origin, "DATA")
+    if IS_WINDOWS:
+        worker_datas.append(yolov5_general_data)
+    else:
+        a.datas.append(yolov5_general_data)
 
 pyz = PYZ(a.pure)
 
@@ -315,13 +372,12 @@ if IS_WINDOWS:
     worker_a = Analysis(
         [os.path.join(SRC, "analysis_worker.py")],
         pathex=[ROOT, SRC],
-        # This is a separate Python module graph from the GUI. Give it the
-        # same explicit native sidecars and data, then merge its resolved TOC
-        # into the final bundle below. Relying on incidental GUI overlap makes
-        # MediaPipe's DLL closure nondeterministic on newer Windows images.
-        binaries=binaries,
-        datas=datas,
-        hiddenimports=hiddenimports,
+        # This is a physically separate native runtime. Its complete closure
+        # is relocated under ``worker/`` below and is never merged into the
+        # GUI bundle, where wxPython DLLs could shadow MediaPipe dependencies.
+        binaries=worker_binaries,
+        datas=worker_datas,
+        hiddenimports=worker_hiddenimports,
         hookspath=[HOOKS],
         hooksconfig={"matplotlib": {"backends": ["Agg"]}},
         runtime_hooks=[],
@@ -395,12 +451,21 @@ else:
         icon=ICON_ICO if os.path.exists(ICON_ICO) else None,
         contents_directory='.',
     )
+    worker_runtime_entries = []
+    if worker_exe is not None:
+        worker_runtime_entries = merge_collection_entries(
+            [("worker/MultiSOCIAL-Worker.exe", worker_exe.name, "EXECUTABLE")],
+            prefix_collection_entries("worker", worker_exe.dependencies),
+            prefix_collection_entries("worker", worker_a.binaries),
+            prefix_collection_entries("worker", worker_a.zipfiles),
+            prefix_collection_entries("worker", worker_a.datas),
+        )
     coll = COLLECT(
         exe,
-        *([worker_exe] if worker_exe is not None else []),
-        merge_collection_entries(a.binaries, worker_a.binaries) if worker_exe is not None else a.binaries,
-        merge_collection_entries(a.zipfiles, worker_a.zipfiles) if worker_exe is not None else a.zipfiles,
-        merge_collection_entries(a.datas, worker_a.datas) if worker_exe is not None else a.datas,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        worker_runtime_entries,
         strip=False,
         upx=not IS_WINDOWS,
         upx_exclude=[],

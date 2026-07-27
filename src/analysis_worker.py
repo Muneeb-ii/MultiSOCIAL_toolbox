@@ -8,6 +8,8 @@ redirected to redacted stderr diagnostics.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import importlib
 import io
 import json
 import os
@@ -103,7 +105,59 @@ def _runtime_metadata() -> dict[str, Any]:
             metadata["windows_major"] = int(version.split(".", 1)[0])
         except (TypeError, ValueError):
             metadata["windows_major"] = None
+    metadata["worker_runtime"] = _worker_runtime_diagnostics()
     return metadata
+
+
+def _worker_runtime_diagnostics() -> dict[str, Any]:
+    """Return safe evidence that native imports came from the private worker."""
+    executable_dir = Path(sys.executable).resolve().parent
+    bundle_root = Path(getattr(sys, "_MEIPASS", executable_dir)).resolve()
+    binding_hashes = []
+    if bundle_root.is_dir():
+        for binding in sorted(bundle_root.rglob("_framework_bindings*.pyd")):
+            try:
+                digest = hashlib.sha256(binding.read_bytes()).hexdigest()
+            except OSError:
+                continue
+            binding_hashes.append({"name": binding.name, "sha256": digest})
+    return {
+        "private_runtime": executable_dir.name.casefold() == "worker" and bundle_root == executable_dir,
+        "mediapipe_bindings": binding_hashes,
+    }
+
+
+def _import_worker_runtime_module(module_name: str) -> Any:
+    """Import through a replaceable seam so preload order is unit-testable."""
+    return importlib.import_module(module_name)
+
+
+def _initialize_worker_operation_runtime(operation: str, payload: dict[str, Any]) -> None:
+    """Initialize each native extension on the worker main thread.
+
+    The loader phases deliberately preserve MediaPipe-before-Torch ordering.
+    Operation handlers subsequently import only already-cached modules from
+    their background thread.
+    """
+    if operation in {"extract_pose", "embed_pose"}:
+        _import_worker_runtime_module("mediapipe")
+        _import_worker_runtime_module("cv2")
+        _enable_worker_tensor_loader()
+        _import_worker_runtime_module("pose")
+        return
+    if operation in {"extract_audio_features", "extract_transcripts", "align_features"}:
+        _enable_worker_tensor_loader()
+        _import_worker_runtime_module("audio")
+        return
+    if operation == "probe":
+        _import_worker_runtime_module("mediapipe")
+        _import_worker_runtime_module("cv2")
+        _import_worker_runtime_module("opensmile")
+        _enable_worker_tensor_loader()
+        _import_worker_runtime_module("torch")
+        if payload.get("profile") == "complete":
+            _import_worker_runtime_module("torchaudio")
+            _import_worker_runtime_module("pyannote.audio")
 
 
 def _run_pose(payload: dict[str, Any], cancelled: threading.Event, emit_progress, emit_status, *, embed: bool) -> dict[str, Any]:
@@ -309,6 +363,13 @@ def main() -> int:
     payload = dict(request.get("payload") or {})
     token = os.environ.pop(WORKER_TOKEN_ENV, None)
     _configure_worker_native_loader()
+    try:
+        with contextlib.redirect_stdout(_RedactingStream(sys.stderr, token)), contextlib.redirect_stderr(_RedactingStream(sys.stderr, token)):
+            _initialize_worker_operation_runtime(operation, payload)
+    except Exception as exc:
+        traceback.print_exc(file=_RedactingStream(sys.stderr, token))
+        _emit(request_id, "error", message=_safe_error(exc, token))
+        return 1
     cancelled = threading.Event()
     result_box: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
 
