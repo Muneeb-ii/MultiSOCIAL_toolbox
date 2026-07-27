@@ -20,16 +20,18 @@ def test_release_workflow_has_upstream_auto_release_guardrails():
 
     assert "UPSTREAM_REPOSITORY: Tahiya31/MultiSOCIAL_toolbox" in workflow
     assert "should_publish_release" in workflow
-    assert "Create upstream release record" in workflow
-    assert "Release ${tag} already exists. Bump pyproject.toml before merging to main." in workflow
-    assert "Git tag ${tag} already exists. Bump pyproject.toml before merging to main." in workflow
+    assert "Derive and validate release metadata" in workflow
+    assert "already exists. Bump pyproject.toml before merging to main." in workflow
+    assert "needs: [prepare, macos-build, windows-build, windows-client-compat]" in workflow
 
 
 def test_release_workflow_uploads_versioned_artifacts():
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}" in workflow
-    assert "Upload release assets to upstream release" in workflow
+    assert workflow.count("name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}") == 2
+    assert "release-asset-" not in workflow
+    assert "Create qualified release and upload four assets" in workflow
     assert "tag_name: ${{ needs.prepare.outputs.release_tag }}" in workflow
 
 
@@ -38,16 +40,31 @@ def test_windows_release_builds_install_only_from_committed_lock():
     standard_lock = (REPO_ROOT / "requirements" / "locks" / "windows-standard-py310.txt").read_text(encoding="utf-8")
     complete_lock = (REPO_ROOT / "requirements" / "locks" / "windows-complete-py310.txt").read_text(encoding="utf-8")
     complete_bootstrap = (REPO_ROOT / "requirements" / "locks" / "windows-complete-bootstrap.txt").read_text(encoding="utf-8")
+    gui_lock = (REPO_ROOT / "requirements" / "locks" / "windows-gui-py310.txt").read_text(encoding="utf-8")
 
-    assert "Verify committed Windows release lock" in workflow
-    assert "pip install --require-hashes -r" in workflow
-    assert "windows-${{ matrix.profile }}-py310.txt" in workflow
+    assert "Create physically separate GUI and worker environments" in workflow
+    assert "pip install --require-hashes --no-deps" in workflow
+    assert "windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt" in workflow
+    assert "windows-gui-py310.txt" in workflow
     assert "windows-2025" in workflow
     assert "windows-client-compat" in workflow
     assert "windows-2022" in workflow
-    assert "Download release-built Windows bundle" in workflow
-    assert "Run downloaded Windows worker probe and audio smoke" in workflow
+    assert "Relocate bundle to an installation-like path" in workflow
+    assert "Run downloaded GUI launch, worker probes, and audio smoke" in workflow
+    assert "repetition: [1, 2, 3]" in workflow
+    assert "packaging/windows_gui.spec" in workflow
+    assert "packaging/windows_worker.spec" in workflow
+    assert "MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny" in workflow
+    assert "needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e" in workflow
+    assert '"type":"cancel"' in workflow
+    assert "test -z \"$(find .tmp/runtime-fixtures/cancelled" in workflow
     assert "--hash=sha256:" in standard_lock
     assert "--hash=sha256:" in complete_lock
-    assert "windows-complete-bootstrap.txt" in complete_lock
+    assert "--hash=sha256:" in gui_lock
+    assert "opencv-contrib-python==4.11.0.86" in standard_lock
+    assert "opencv-python==" not in standard_lock
+    assert "opencv-python-headless==" not in standard_lock
+    assert "wxpython==" not in standard_lock.lower()
+    assert "wxpython==4.2.3" in gui_lock.lower()
+    assert "torch==" not in gui_lock.lower()
     assert "pyannote.core==5.0.0" in complete_bootstrap

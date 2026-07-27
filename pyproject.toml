@@ -54,14 +54,21 @@ dev = [
 [tool.setuptools]
 include-package-data = true
 py-modules = [
+  "analysis_backend",
   "app",
+  "app_macos",
+  "app_windows",
   "audio",
   "captions",
   "gui_utils",
+  "native_backend",
+  "native_worker_client",
   "pose",
   "runtime_services",
+  "source_entry",
   "ui_components",
   "verify_pose_embedding",
+  "worker_backend",
 ]
 
 [tool.setuptools.package-dir]

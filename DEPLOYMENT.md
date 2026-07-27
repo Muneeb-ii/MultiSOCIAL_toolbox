@@ -36,8 +36,9 @@ version = "1.0.0"
 
 3. GitHub Actions will automatically:
    - read `version = "1.0.0"` from `pyproject.toml`
-   - create the upstream GitHub Release `v1.0.0`
    - build the macOS and Windows packages
+   - qualify Windows with three clean builds per profile and a Windows 2022 relocation test
+   - create the upstream GitHub Release `v1.0.0` only after every qualification job passes
    - upload the release assets to that upstream release
 
 No manual tag push is required for upstream releases.
@@ -66,7 +67,18 @@ Post-build checks:
 - Release workflow verifies the Heavy model path on Standard and Complete artifacts.
 - Packaged import smoke test runs with `MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1` so missing Heavy aborts startup.
 - macOS builds assert Info.plist version matches `pyproject.toml`.
-- Windows builds run the private `MultiSOCIAL-Worker.exe` probe and OpenSMILE audio smoke after packaging; the same built Windows artifacts are then exercised on a Windows 2022 x64 compatibility runner. These checks do not create additional user-visible artifacts.
+- Windows GUI and worker builds use separate hashed locks, virtual environments, PyInstaller processes, work directories, and onedir runtimes. The GUI lock contains no native-analysis packages; the worker lock contains no wxPython and exactly one `cv2` provider (`opencv-contrib-python`).
+- Each Windows profile must pass three clean builds. Every build performs ten cold native-worker probes plus OpenSMILE, MediaPipe, YOLO/Torch, pose-embedding, and staged-output checks. The canonical build also runs Whisper ASR.
+- The canonical Windows ZIP is downloaded and relocated to a path containing spaces and non-ASCII characters on a Windows 2022 runner, then exercised through both the GUI launcher and worker. These checks do not create additional user-visible artifacts.
+- Official Complete releases require the secret-backed diarization E2E. Fork maintainers can opt into the same check with `run_windows_complete_e2e`.
+
+## Windows packaging boundary
+
+- `MultiSOCIAL.spec` is macOS-only.
+- `packaging/windows_gui.spec` analyzes only the shared GUI and worker client.
+- `packaging/windows_worker.spec` analyzes native pose/audio dependencies without wxPython.
+- `packaging/assemble_windows.py` copies the finished worker onedir beneath `worker/`; it never merges PyInstaller TOCs.
+- Any new Windows GUI import of Torch, Transformers, MediaPipe, OpenCV, OpenSMILE, YOLO, or diarization code fails during `Analysis`, before assembly.
 
 ## Testing workflow before upstream release
 

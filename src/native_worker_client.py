@@ -7,6 +7,7 @@ process to import before wxPython starts on every platform.
 from __future__ import annotations
 
 import glob
+import ctypes
 import json
 import os
 import queue
@@ -21,6 +22,7 @@ from typing import Any, Callable, Optional
 
 PROTOCOL_VERSION = 1
 WORKER_TOKEN_ENV = "MULTISOCIAL_WORKER_HF_TOKEN"
+_WINDOWS_LAUNCH_LOCK = threading.Lock()
 
 
 class WorkerError(RuntimeError):
@@ -69,6 +71,77 @@ def _worker_popen_kwargs() -> dict[str, Any]:
     return {"creationflags": creationflags} if creationflags else {}
 
 
+def _path_is_within(path: str | Path, root: str | Path) -> bool:
+    try:
+        Path(os.path.normcase(os.path.abspath(path))).relative_to(
+            Path(os.path.normcase(os.path.abspath(root)))
+        )
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _worker_directory(command: list[str]) -> Path:
+    executable = Path(command[0]).resolve()
+    if executable.name.casefold() == "multiSOCIAL-worker.exe".casefold():
+        return executable.parent
+    if len(command) > 1:
+        return Path(command[1]).resolve().parent
+    return executable.parent
+
+
+def _packaged_windows_environment(command: list[str], token: Optional[str]) -> dict[str, str]:
+    env = os.environ.copy()
+    if token:
+        env[WORKER_TOKEN_ENV] = token
+    else:
+        env.pop(WORKER_TOKEN_ENV, None)
+
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return env
+
+    app_root = Path(sys.executable).resolve().parent
+    worker_dir = _worker_directory(command)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+
+    path_separator = ";"
+    inherited_path = env.get("PATH", "")
+    clean_entries = [
+        entry
+        for entry in inherited_path.split(path_separator)
+        if entry and not _path_is_within(entry, app_root)
+    ]
+    env["PATH"] = path_separator.join([str(worker_dir), *clean_entries])
+
+    inherited_ffmpeg = env.get("MULTISOCIAL_FFMPEG_EXE")
+    if inherited_ffmpeg and _path_is_within(inherited_ffmpeg, app_root):
+        env.pop("MULTISOCIAL_FFMPEG_EXE", None)
+    return env
+
+
+def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
+    """Spawn a packaged worker without inheriting the GUI DLL search directory."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return subprocess.Popen(command, **kwargs)
+
+    gui_bundle_root = str(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)).resolve())
+    kernel32 = ctypes.windll.kernel32
+    with _WINDOWS_LAUNCH_LOCK:
+        if not kernel32.SetDllDirectoryW(None):
+            raise WorkerError("Could not clear the GUI DLL search directory before starting the worker")
+        process = None
+        try:
+            process = subprocess.Popen(command, **kwargs)
+        finally:
+            if not kernel32.SetDllDirectoryW(gui_bundle_root):
+                if process is not None:
+                    process.terminate()
+                raise WorkerError("Could not restore the GUI DLL search directory after starting the worker")
+        return process
+
+
 class NativeWorkerClient:
     """Run exactly one native operation in an isolated console child process."""
 
@@ -87,13 +160,10 @@ class NativeWorkerClient:
         hf_token: Optional[str] = None,
     ) -> dict[str, Any]:
         request_id = str(uuid.uuid4())
-        env = os.environ.copy()
-        if hf_token:
-            env[WORKER_TOKEN_ENV] = hf_token
-        else:
-            env.pop(WORKER_TOKEN_ENV, None)
+        env = _packaged_windows_environment(self.command, hf_token)
+        worker_dir = _worker_directory(self.command)
 
-        process = subprocess.Popen(
+        process = _spawn_worker(
             self.command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -103,6 +173,7 @@ class NativeWorkerClient:
             errors="replace",
             bufsize=1,
             env=env,
+            cwd=str(worker_dir),
             **_worker_popen_kwargs(),
         )
         assert process.stdin is not None and process.stdout is not None and process.stderr is not None

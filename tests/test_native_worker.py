@@ -93,6 +93,60 @@ def test_frozen_windows_worker_uses_its_private_runtime_directory(tmp_path, monk
     assert native_worker_client.worker_command() == [str(worker)]
 
 
+def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeypatch):
+    import native_worker_client
+
+    gui = tmp_path / "app" / "MultiSOCIAL-Standard.exe"
+    worker = gui.parent / "worker" / "MultiSOCIAL-Worker.exe"
+    worker.parent.mkdir(parents=True)
+    gui.touch()
+    worker.touch()
+    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
+    monkeypatch.setattr(native_worker_client.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(native_worker_client.sys, "executable", str(gui))
+    monkeypatch.setenv("PATH", f"{gui.parent};C:\\Windows\\System32")
+    monkeypatch.setenv("PYTHONHOME", "bad")
+    monkeypatch.setenv("PYTHONPATH", "bad")
+    monkeypatch.setenv("MULTISOCIAL_FFMPEG_EXE", str(gui.parent / "ffmpeg.exe"))
+
+    env = native_worker_client._packaged_windows_environment([str(worker)], None)
+
+    assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    assert env["PATH"].split(";")[0] == str(worker.parent)
+    assert str(gui.parent) not in env["PATH"].split(";")[1:]
+    assert "PYTHONHOME" not in env
+    assert "PYTHONPATH" not in env
+    assert "MULTISOCIAL_FFMPEG_EXE" not in env
+
+
+def test_packaged_windows_spawn_clears_and_restores_dll_directory(tmp_path, monkeypatch):
+    import native_worker_client
+
+    calls = []
+    sentinel = object()
+
+    class Kernel32:
+        def SetDllDirectoryW(self, value):
+            calls.append(value)
+            return 1
+
+    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
+    monkeypatch.setattr(native_worker_client.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(native_worker_client.sys, "_MEIPASS", str(tmp_path / "gui"), raising=False)
+    monkeypatch.setattr(
+        native_worker_client.ctypes,
+        "windll",
+        type("Windll", (), {"kernel32": Kernel32()})(),
+        raising=False,
+    )
+    monkeypatch.setattr(native_worker_client.subprocess, "Popen", lambda *args, **kwargs: sentinel)
+
+    result = native_worker_client._spawn_worker(["worker.exe"])
+
+    assert result is sentinel
+    assert calls == [None, str((tmp_path / "gui").resolve())]
+
+
 def test_worker_probe_metadata_reports_the_current_architecture():
     from analysis_worker import _runtime_metadata
 
@@ -101,6 +155,44 @@ def test_worker_probe_metadata_reports_the_current_architecture():
     assert metadata["platform"] == sys.platform
     assert metadata["is_64bit"] is (sys.maxsize > 2**32)
     assert "worker_runtime" in metadata
+
+
+def test_worker_runtime_flags_dlls_loaded_from_gui_root(tmp_path, monkeypatch):
+    import analysis_worker
+
+    worker_root = tmp_path / "app" / "worker"
+    worker_root.mkdir(parents=True)
+    monkeypatch.setattr(analysis_worker.sys, "platform", "win32")
+    monkeypatch.setattr(analysis_worker.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        analysis_worker,
+        "_loaded_windows_module_paths",
+        lambda: [
+            worker_root / "torch_cpu.dll",
+            worker_root.parent / "wxbase.dll",
+        ],
+    )
+
+    assert analysis_worker._loaded_module_violations(worker_root) == ["wxbase.dll"]
+
+
+def test_worker_runtime_flags_package_native_modules_outside_worker(tmp_path, monkeypatch):
+    import analysis_worker
+
+    worker_root = tmp_path / "app" / "worker"
+    worker_root.mkdir(parents=True)
+    monkeypatch.setattr(analysis_worker.sys, "platform", "win32")
+    monkeypatch.setattr(analysis_worker.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        analysis_worker,
+        "_loaded_windows_module_paths",
+        lambda: [
+            worker_root / "torch_cpu.dll",
+            tmp_path / "foreign" / "_framework_bindings.pyd",
+        ],
+    )
+
+    assert analysis_worker._native_module_violations(worker_root) == ["_framework_bindings.pyd"]
 
 
 def test_worker_preloads_pose_runtime_in_mediapipe_then_torch_order(monkeypatch):
@@ -139,4 +231,16 @@ def test_staged_output_promotes_only_complete_files(tmp_path):
         stage.commit()
 
     assert (destination / "result.csv").read_text(encoding="utf-8") == "complete"
+    assert not list(destination.glob(".multisocial-worker-*"))
+
+
+def test_staged_output_removes_cancelled_partial_files(tmp_path):
+    from analysis_worker import _StagedOutput
+
+    destination = tmp_path / "destination"
+    with _StagedOutput(str(destination)) as staged:
+        with open(os.path.join(staged, "partial.csv"), "w", encoding="utf-8") as handle:
+            handle.write("partial")
+
+    assert not (destination / "partial.csv").exists()
     assert not list(destination.glob(".multisocial-worker-*"))

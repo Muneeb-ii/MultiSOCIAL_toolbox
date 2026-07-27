@@ -8,6 +8,7 @@ redirected to redacted stderr diagnostics.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import hashlib
 import importlib
 import io
@@ -124,7 +125,134 @@ def _worker_runtime_diagnostics() -> dict[str, Any]:
     return {
         "private_runtime": executable_dir.name.casefold() == "worker" and bundle_root == executable_dir,
         "mediapipe_bindings": binding_hashes,
+        "loaded_module_violations": _loaded_module_violations(bundle_root),
+        "native_module_violations": _native_module_violations(bundle_root),
     }
+
+
+def _path_is_within(path: str | Path, root: str | Path) -> bool:
+    try:
+        Path(os.path.normcase(os.path.abspath(path))).relative_to(
+            Path(os.path.normcase(os.path.abspath(root)))
+        )
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _loaded_windows_module_paths() -> list[Path]:
+    """Enumerate this process' loaded modules without adding a native dependency."""
+    if sys.platform != "win32":
+        return []
+    from ctypes import wintypes
+
+    process = ctypes.windll.kernel32.GetCurrentProcess()
+    module_array = (wintypes.HMODULE * 4096)()
+    needed = wintypes.DWORD()
+    enum_modules = getattr(ctypes.windll.kernel32, "K32EnumProcessModules", None)
+    module_filename = getattr(ctypes.windll.kernel32, "K32GetModuleFileNameExW", None)
+    if enum_modules is None or module_filename is None:
+        enum_modules = ctypes.windll.psapi.EnumProcessModules
+        module_filename = ctypes.windll.psapi.GetModuleFileNameExW
+    if not enum_modules(process, module_array, ctypes.sizeof(module_array), ctypes.byref(needed)):
+        raise OSError("Could not enumerate loaded worker modules")
+
+    count = min(len(module_array), needed.value // ctypes.sizeof(wintypes.HMODULE))
+    paths: list[Path] = []
+    for module in module_array[:count]:
+        buffer = ctypes.create_unicode_buffer(32768)
+        if module_filename(process, module, buffer, len(buffer)):
+            paths.append(Path(buffer.value).resolve())
+    return paths
+
+
+def _loaded_module_violations(bundle_root: Path) -> list[str]:
+    """Return DLLs loaded from the containing GUI runtime instead of worker/."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return []
+    app_root = bundle_root.parent
+    violations = []
+    for path in _loaded_windows_module_paths():
+        if _path_is_within(path, app_root) and not _path_is_within(path, bundle_root):
+            violations.append(path.name)
+    return sorted(set(violations), key=str.casefold)
+
+
+def _native_module_violations(bundle_root: Path) -> list[str]:
+    """Return package-native extensions or DLLs resolved outside worker/."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return []
+    native_markers = (
+        "_framework_bindings",
+        "audresample",
+        "c10",
+        "fbgemm",
+        "libiomp",
+        "mediapipe",
+        "opencv",
+        "smileapi",
+        "torch",
+    )
+    violations = []
+    for path in _loaded_windows_module_paths():
+        basename = path.name.casefold()
+        package_native = path.suffix.casefold() == ".pyd" or any(
+            marker in basename for marker in native_markers
+        )
+        if package_native and not _path_is_within(path, bundle_root):
+            violations.append(path.name)
+    return sorted(set(violations), key=str.casefold)
+
+
+def _operation_module_names(operation: str, payload: dict[str, Any]) -> tuple[str, ...]:
+    if operation in {"extract_pose", "embed_pose"}:
+        return ("mediapipe", "mediapipe.python._framework_bindings", "cv2", "torch", "pose")
+    if operation in {"extract_audio_features", "extract_transcripts", "align_features"}:
+        return ("audio", "opensmile", "torch", "transformers")
+    if operation == "probe":
+        names = ["mediapipe", "mediapipe.python._framework_bindings", "cv2", "opensmile", "torch"]
+        if payload.get("profile") == "complete":
+            names.extend(["torchaudio", "pyannote.audio"])
+        return tuple(names)
+    return ()
+
+
+def _validate_worker_runtime_provenance(operation: str, payload: dict[str, Any]) -> None:
+    """Fail closed if a frozen worker resolved native state outside worker/."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+
+    executable_dir = Path(sys.executable).resolve().parent
+    bundle_root = Path(getattr(sys, "_MEIPASS", executable_dir)).resolve()
+    if executable_dir.name.casefold() != "worker" or bundle_root != executable_dir:
+        raise RuntimeError("Worker executable and bundle root are not the private worker runtime")
+
+    python_dll = bundle_root / f"python{sys.version_info.major}{sys.version_info.minor}.dll"
+    if not python_dll.is_file():
+        raise RuntimeError(f"Private worker Python runtime is missing: {python_dll.name}")
+
+    for module_name in _operation_module_names(operation, payload):
+        module = sys.modules.get(module_name)
+        module_path = getattr(module, "__file__", None)
+        if not module_path or not _path_is_within(module_path, bundle_root):
+            raise RuntimeError(f"Worker module resolved outside private runtime: {module_name}")
+
+    loaded_paths = _loaded_windows_module_paths()
+    loaded_python = [path for path in loaded_paths if path.name.casefold() == python_dll.name.casefold()]
+    if not loaded_python or any(not _path_is_within(path, bundle_root) for path in loaded_python):
+        raise RuntimeError(f"Loaded Python runtime did not resolve beneath worker/: {python_dll.name}")
+
+    violations = _loaded_module_violations(bundle_root)
+    if violations:
+        raise RuntimeError(
+            "Worker loaded DLLs from the GUI runtime: " + ", ".join(violations[:10])
+        )
+    native_violations = _native_module_violations(bundle_root)
+    if native_violations:
+        raise RuntimeError(
+            "Worker loaded package-native modules outside worker/: "
+            + ", ".join(native_violations[:10])
+        )
 
 
 def _import_worker_runtime_module(module_name: str) -> Any:
@@ -158,6 +286,19 @@ def _initialize_worker_operation_runtime(operation: str, payload: dict[str, Any]
         if payload.get("profile") == "complete":
             _import_worker_runtime_module("torchaudio")
             _import_worker_runtime_module("pyannote.audio")
+
+
+def _configure_worker_ffmpeg() -> None:
+    """Use the worker's ffmpeg copy instead of an inherited GUI executable."""
+    if not getattr(sys, "frozen", False):
+        return
+    import imageio_ffmpeg
+
+    executable = Path(imageio_ffmpeg.get_ffmpeg_exe()).resolve()
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)).resolve()
+    if not _path_is_within(executable, bundle_root):
+        raise RuntimeError("Worker ffmpeg resolved outside the private worker runtime")
+    os.environ["MULTISOCIAL_FFMPEG_EXE"] = str(executable)
 
 
 def _run_pose(payload: dict[str, Any], cancelled: threading.Event, emit_progress, emit_status, *, embed: bool) -> dict[str, Any]:
@@ -365,7 +506,9 @@ def main() -> int:
     _configure_worker_native_loader()
     try:
         with contextlib.redirect_stdout(_RedactingStream(sys.stderr, token)), contextlib.redirect_stderr(_RedactingStream(sys.stderr, token)):
+            _configure_worker_ffmpeg()
             _initialize_worker_operation_runtime(operation, payload)
+            _validate_worker_runtime_provenance(operation, payload)
     except Exception as exc:
         traceback.print_exc(file=_RedactingStream(sys.stderr, token))
         _emit(request_id, "error", message=_safe_error(exc, token))

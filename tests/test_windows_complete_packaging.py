@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib
 from pathlib import Path
 
@@ -28,19 +29,35 @@ def test_runtime_hook_uses_a_stable_allowlist_without_recursive_discovery(tmp_pa
 
 def test_complete_smoke_and_diarization_use_the_windows_native_preload():
     app_source = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+    native_backend_source = (ROOT / "src" / "native_backend.py").read_text(encoding="utf-8")
     audio_source = (ROOT / "src" / "audio.py").read_text(encoding="utf-8")
 
-    assert "runtime_services.preload_frozen_windows_diarization_dependencies()" in app_source
+    imported_roots = {
+        node.module.split(".", 1)[0]
+        for node in ast.walk(ast.parse(app_source))
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    imported_roots.update(
+        alias.name.split(".", 1)[0]
+        for node in ast.walk(ast.parse(app_source))
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+    assert "pyannote" not in imported_roots
+    assert "runtime_services.preload_frozen_windows_diarization_dependencies()" in native_backend_source
     assert "preload_frozen_windows_diarization_dependencies()" in audio_source
 
 
 def test_windows_gui_uses_the_private_worker_without_path_mutation():
     app_source = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+    backend_source = (ROOT / "src" / "worker_backend.py").read_text(encoding="utf-8")
     hook_source = (ROOT / "src" / "runtime_hook_dlls.py").read_text(encoding="utf-8")
     worker_source = (ROOT / "src" / "analysis_worker.py").read_text(encoding="utf-8")
 
-    assert "WindowsAudioProcessor" in app_source
-    assert "WindowsPoseProcessor" in app_source
+    assert "WindowsAudioProcessor" not in app_source
+    assert "WindowsPoseProcessor" not in app_source
+    assert "WindowsAudioProcessor" in backend_source
+    assert "WindowsPoseProcessor" in backend_source
     assert 'os.environ["PATH"]' not in hook_source
     assert "_configure_worker_native_loader" in worker_source
     assert "_enable_worker_tensor_loader" in worker_source
@@ -48,36 +65,52 @@ def test_windows_gui_uses_the_private_worker_without_path_mutation():
 
 def test_windows_gui_does_not_statically_import_the_worker_native_graph():
     app_source = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
-    spec_source = (ROOT / "MultiSOCIAL.spec").read_text(encoding="utf-8")
+    entry_source = (ROOT / "src" / "app_windows.py").read_text(encoding="utf-8")
+    spec_source = (ROOT / "packaging" / "windows_gui.spec").read_text(encoding="utf-8")
 
-    assert "from audio import AudioProcessor" not in app_source
-    assert "from pose import PoseProcessor" not in app_source
-    assert 'importlib.import_module("audio").AudioProcessor' in app_source
-    assert 'importlib.import_module("pose").PoseProcessor' in app_source
-    assert '"audio",' in spec_source
-    assert '"pose",' in spec_source
+    imported_roots = set()
+    for source in (app_source, entry_source):
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_roots.add(node.module.split(".", 1)[0])
+    assert not imported_roots & {"audio", "pose", "mediapipe", "torch", "transformers", "pyannote"}
+    assert "importlib.import_module" not in app_source
+    assert 'str(SRC / "app_windows.py")' in spec_source
+    assert "assert_gui_graph(a)" in spec_source
 
 
-def test_windows_spec_builds_console_worker_and_workflow_probes_it():
-    spec_source = (ROOT / "MultiSOCIAL.spec").read_text(encoding="utf-8")
+def test_windows_specs_build_independent_gui_and_console_worker():
+    gui_spec = (ROOT / "packaging" / "windows_gui.spec").read_text(encoding="utf-8")
+    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
     workflow_source = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert 'name="MultiSOCIAL-Worker"' in spec_source
-    assert "console=True" in spec_source
-    assert "gui_hiddenimports" in spec_source
-    assert "worker_hiddenimports" in spec_source
-    assert "gui_binaries = msvc_runtime_binaries" in spec_source
-    assert 'gui_excludes = ["audio", "pose"]' in spec_source
-    assert "prefix_collection_entries" in spec_source
-    assert '"worker/MultiSOCIAL-Worker.exe"' in spec_source
-    assert "merge_collection_entries(a.binaries, worker_a.binaries)" not in spec_source
-    assert "Run packaged Windows analysis worker probe" in workflow_source
-    assert "Run packaged Windows audio-feature worker smoke" in workflow_source
-    assert "Worker probe ${attempt}/10" in workflow_source
-    assert "Downloaded worker probe ${attempt}/10" in workflow_source
-    assert "/worker/MultiSOCIAL-Worker.exe" in workflow_source
+    assert 'name="MultiSOCIAL-Worker"' in worker_spec
+    assert "console=True" in worker_spec
+    assert "assert_worker_graph(a)" in worker_spec
+    assert "wx" not in worker_spec.split("hiddenimports = list", 1)[1].split("datas =", 1)[0]
+    assert "assert_gui_graph(a)" in gui_spec
+    assert "analysis_worker.py" not in gui_spec
+    assert "Build native-free Windows GUI" in workflow_source
+    assert "Build private Windows worker in a separate process" in workflow_source
+    assert "assemble_windows.py" in workflow_source
+    assert "for attempt in $(seq 1 10)" in workflow_source
+    assert "MULTISOCIAL_VERIFY_WORKER_LAUNCH=1" in workflow_source
     assert "run_windows_complete_e2e" in workflow_source
     assert "MULTISOCIAL_CI_HF_TOKEN" in workflow_source
+
+
+def test_windows_dynamic_manifests_do_not_discover_transformers_or_diarization_recursively():
+    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
+    manifest = (ROOT / "packaging" / "windows_hiddenimports.py").read_text(encoding="utf-8")
+    transformer_hook = (ROOT / "hooks" / "hook-transformers.py").read_text(encoding="utf-8")
+
+    for package in ("transformers", "pyannote", "speechbrain", "torchaudio", "huggingface_hub"):
+        assert f'collect_submodules("{package}")' not in worker_spec
+    assert "transformers.models.whisper.modeling_whisper" in manifest
+    assert "pyannote.audio.pipelines.speaker_diarization" in manifest
+    assert "transformers.quantizers" in transformer_hook
 
 
 def test_worker_initializes_native_modules_before_starting_the_operation_thread():

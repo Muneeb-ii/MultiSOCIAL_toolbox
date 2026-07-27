@@ -2,12 +2,13 @@ name: Build Releases
 
 env:
   UPSTREAM_REPOSITORY: Tahiya31/MultiSOCIAL_toolbox
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   workflow_dispatch:
     inputs:
       run_windows_complete_e2e:
-        description: Run the secret-backed Windows Complete diarization smoke test (fork only).
+        description: Run the secret-backed Windows Complete diarization smoke test.
         required: false
         default: false
         type: boolean
@@ -22,371 +23,271 @@ permissions:
 
 jobs:
   prepare:
-    # env context is unavailable in job-level if; keep in sync with env.UPSTREAM_REPOSITORY above.
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
     runs-on: ubuntu-latest
     outputs:
       app_version: ${{ steps.meta.outputs.app_version }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       should_publish_release: ${{ steps.meta.outputs.should_publish_release }}
-      trigger_kind: ${{ steps.meta.outputs.trigger_kind }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Derive release metadata
+      - name: Derive and validate release metadata
         id: meta
         env:
-          UPSTREAM_REPOSITORY: ${{ env.UPSTREAM_REPOSITORY }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          APP_VERSION="$(python - <<'PY'
-          import pathlib
-          import re
-
-          pyproject = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
-          if not match:
-              raise SystemExit("Could not determine version from pyproject.toml")
-          print(match.group(1))
-          PY
-          )"
-
-          RELEASE_TAG="v${APP_VERSION}"
-          TRIGGER_KIND="manual"
-          SHOULD_PUBLISH_RELEASE="false"
-
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TRIGGER_KIND="tag"
-          elif [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            TRIGGER_KIND="main"
-            if [[ "${GITHUB_REPOSITORY}" == "${UPSTREAM_REPOSITORY}" ]]; then
-              SHOULD_PUBLISH_RELEASE="true"
+          app_version="$(python -c "import re; from pathlib import Path; print(re.search(r'^version\\s*=\\s*\"([^\"]+)\"', Path('pyproject.toml').read_text(), re.M).group(1))")"
+          release_tag="v${app_version}"
+          should_publish="false"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" && "${GITHUB_REPOSITORY}" == "${UPSTREAM_REPOSITORY}" ]]; then
+            should_publish="true"
+            if gh release view "${release_tag}" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+              echo "Release or tag ${release_tag} already exists. Bump pyproject.toml before merging to main." >&2
+              exit 1
             fi
           fi
+          echo "app_version=${app_version}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "should_publish_release=${should_publish}" >> "${GITHUB_OUTPUT}"
 
-          echo "app_version=${APP_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
-          echo "should_publish_release=${SHOULD_PUBLISH_RELEASE}" >> "${GITHUB_OUTPUT}"
-          echo "trigger_kind=${TRIGGER_KIND}" >> "${GITHUB_OUTPUT}"
-
-      - name: Create upstream release record
-        if: steps.meta.outputs.should_publish_release == 'true'
-        uses: actions/github-script@v8
-        env:
-          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
-          APP_VERSION: ${{ steps.meta.outputs.app_version }}
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const tag = process.env.RELEASE_TAG;
-            const version = process.env.APP_VERSION;
-
-            try {
-              await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-              core.setFailed(`Release ${tag} already exists. Bump pyproject.toml before merging to main.`);
-              return;
-            } catch (error) {
-              if (error.status !== 404) {
-                throw error;
-              }
-            }
-
-            try {
-              await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
-              core.setFailed(`Git tag ${tag} already exists. Bump pyproject.toml before merging to main.`);
-              return;
-            } catch (error) {
-              if (error.status !== 404) {
-                throw error;
-              }
-            }
-
-            await github.rest.repos.createRelease({
-              owner,
-              repo,
-              tag_name: tag,
-              target_commitish: context.sha,
-              name: tag,
-              body: `Automated release for version ${version} from ${context.sha}.`,
-              generate_release_notes: true,
-              draft: false,
-              prerelease: false,
-            });
-
-  build:
-    # env context is unavailable in job-level if; keep in sync with env.UPSTREAM_REPOSITORY above.
-    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
+  macos-build:
     needs: prepare
     strategy:
       fail-fast: false
       matrix:
-        # Pin the production Windows artifact to the current Windows 11-family
-        # x64 image. A separate job below executes that exact artifact on the
-        # Windows 10-family compatibility image; no extra release artifacts.
-        os: [windows-2025, macos-latest]
         profile: [standard, complete]
-
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     env:
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PIP_NO_CACHE_DIR: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.tmp/pycache-${{ matrix.os }}-${{ matrix.profile }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
 
-      - name: Clear local caches used by packaging tools
-        shell: bash
+      - name: Install macOS build environment
         run: |
-          set -euo pipefail
-          rm -rf "${HOME}/.cache/pip" "${HOME}/.cache/pyinstaller" "${HOME}/Library/Caches/pip" || true
+          python -m pip install --upgrade pip
+          python -m pip install "setuptools==80.10.2"
+          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
+            python -m pip install ".[complete,dev]"
+          else
+            python -m pip install ".[dev]"
+          fi
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
-      - name: Pin setuptools for PyInstaller runtime hook compatibility
-        if: runner.os != 'Windows'
-        run: python -m pip install "setuptools==80.10.2"
-
-      - name: Verify committed Windows release lock
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f "requirements/locks/windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt"
-
-      - name: Install Windows release lock
-        if: runner.os == 'Windows'
-        run: python -m pip install --require-hashes -r "requirements/locks/windows-${{ matrix.profile }}-py310.txt"
-
-      - name: Install standard build dependencies
-        if: matrix.profile == 'standard' && runner.os != 'Windows'
-        run: python -m pip install ".[dev]"
-
-      - name: Install complete build dependencies
-        if: matrix.profile == 'complete' && runner.os != 'Windows'
-        run: python -m pip install ".[complete,dev]"
-
-      - name: Build PyInstaller bundle
+      - name: Build unchanged in-process macOS application
         env:
-          MPLCONFIGDIR: ${{ github.workspace }}/.tmp/mplconfig-${{ matrix.os }}-${{ matrix.profile }}
-          PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/pyinstaller-${{ matrix.os }}-${{ matrix.profile }}
+          MPLCONFIGDIR: ${{ github.workspace }}/.tmp/macos-mpl-${{ matrix.profile }}
+          PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/macos-pyi-${{ matrix.profile }}
         run: pyinstaller --clean --noconfirm MultiSOCIAL.spec
 
-      - name: Validate Windows runtime DLL exclusions
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; blocked={'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll'}; allowed={name for name in blocked if (root / name).exists()}; hits=[str(p.relative_to(root)) for p in root.rglob('*') if p.is_file() and p.name.lower() in blocked and p.parent != root] if root.exists() else None; (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if hits is None else None; missing=[name for name in blocked if name not in allowed]; (print('Required VC runtime DLLs missing from app root:', file=sys.stderr), [print(f'  - {name}', file=sys.stderr) for name in missing], sys.exit(1)) if missing else None; (print('Blocked duplicate VC runtime DLLs found in packaged app:', file=sys.stderr), [print(f'  - {h}', file=sys.stderr) for h in hits], sys.exit(1)) if hits else print('Windows DLL validation passed.')"
-
-      - name: Validate Windows bundled native library paths
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -c "import os,sys; from pathlib import Path; profile=os.environ['MULTISOCIAL_BUILD_PROFILE']; app='MultiSOCIAL-Complete' if profile=='complete' else 'MultiSOCIAL-Standard'; root=Path('dist')/app; worker=root/'worker'; required=['audresample/core/bin/win_amd64/audresample.dll','opensmile/core/bin/win_amd64/SMILEapi.dll']; missing=[path for path in required if not (worker / path).exists()]; mediapipe_hits=list(worker.rglob('_framework_bindings*.pyd')); gui_native=[name for name in ('mediapipe','torch','opensmile','cv2') if (root / name).exists()]; (print(f'Expected dist folder missing: {root}', file=sys.stderr), sys.exit(1)) if not root.exists() else None; (print('Private worker executable missing.', file=sys.stderr), sys.exit(1)) if not (worker/'MultiSOCIAL-Worker.exe').is_file() else None; (print('Missing worker-native libraries:', file=sys.stderr), [print(f'  - {path}', file=sys.stderr) for path in missing], sys.exit(1)) if missing else None; (print('Missing worker MediaPipe _framework_bindings binary.', file=sys.stderr), sys.exit(1)) if not mediapipe_hits else None; (print('GUI contains worker-native package directories:', file=sys.stderr), [print(f'  - {name}', file=sys.stderr) for name in gui_native], sys.exit(1)) if gui_native else None; print('Windows private worker layout validation passed.')"
-
-      - name: Validate macOS app symlink integrity
-        if: runner.os == 'macOS'
+      - name: Validate and smoke-test macOS application
         shell: bash
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
-          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
-            app_name="MultiSOCIAL-Complete"
-          fi
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
           app_path="dist/${app_name}.app"
-          link_path="${app_path}/Contents/Frameworks/Python.framework/Versions/Current"
-          if [[ ! -d "${app_path}" ]]; then
-            echo "Expected app not found: ${app_path}" >&2
-            exit 1
-          fi
-          if [[ ! -L "${link_path}" ]]; then
-            echo "Broken app bundle layout: ${link_path} must be a symlink." >&2
-            exit 1
-          fi
-          expected_version="$(python -c "import re; from pathlib import Path; print(re.search(r'^version\\s*=\\s*\\\"([^\\\"]+)\\\"', Path('pyproject.toml').read_text(), re.M).group(1))")"
-          actual_version="$(plutil -extract CFBundleShortVersionString raw "${app_path}/Contents/Info.plist")"
-          if [[ "${actual_version}" != "${expected_version}" ]]; then
-            echo "Incorrect macOS app version: expected ${expected_version}, got ${actual_version}" >&2
-            exit 1
-          fi
-          echo "macOS symlink integrity check passed."
+          link="${app_path}/Contents/Frameworks/Python.framework/Versions/Current"
+          test -d "${app_path}"
+          test -L "${link}"
+          expected="${APP_VERSION}"
+          actual="$(plutil -extract CFBundleShortVersionString raw "${app_path}/Contents/Info.plist")"
+          test "${actual}" = "${expected}"
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 \
+            "${app_path}/Contents/MacOS/${app_name}"
+          python .github/scripts/validate_complete_bundle_layout.py
 
-      - name: Validate complete profile bundle layout
-        if: matrix.profile == 'complete'
-        shell: bash
-        run: python .github/scripts/validate_complete_bundle_layout.py
-
-      - name: Validate packaged Heavy pose model
+      - name: Archive macOS application
         shell: bash
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
-          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
-            app_name="MultiSOCIAL-Complete"
-          fi
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            root="dist/${app_name}/worker"
-          else
-            root="dist/${app_name}.app"
-          fi
-          test -f "${root}/Contents/Resources/mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite" || test -f "${root}/mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          mkdir -p release-artifacts workflow-artifacts
+          ditto -c -k --sequesterRsrc --keepParent "dist/${app_name}.app" \
+            "release-artifacts/${app_name}-macos.zip"
+          cp -R "dist/${app_name}.app" workflow-artifacts/
+          cp "release-artifacts/${app_name}-macos.zip" workflow-artifacts/
 
-      - name: Run packaged import smoke test
+      - uses: actions/upload-artifact@v5
+        with:
+          name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}
+          path: workflow-artifacts/*
+
+  windows-build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [standard, complete]
+        repetition: [1, 2, 3]
+    runs-on: windows-2025
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+      MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
+      PIP_NO_CACHE_DIR: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.tmp/pycache-${{ matrix.profile }}-${{ matrix.repetition }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Create physically separate GUI and worker environments
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv-gui
+          python -m venv .venv-worker
+          .venv-gui/Scripts/python.exe -m pip install --require-hashes --no-deps \
+            -r requirements/locks/windows-gui-py310.txt
+          .venv-worker/Scripts/python.exe -m pip install --require-hashes --no-deps \
+            -r "requirements/locks/windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt"
+
+      - name: Audit dependency ownership before analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv-gui/Scripts/python.exe packaging/audit_windows_environment.py --kind gui
+          .venv-worker/Scripts/python.exe packaging/audit_windows_environment.py --kind worker
+
+      - name: Build native-free Windows GUI
+        shell: bash
+        env:
+          MPLCONFIGDIR: ${{ github.workspace }}/.tmp/gui-mpl-${{ matrix.repetition }}
+          PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/gui-pyi-${{ matrix.repetition }}
+        run: |
+          set -euo pipefail
+          .venv-gui/Scripts/python.exe -m PyInstaller --clean --noconfirm \
+            --workpath ".tmp/gui-work-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
+            --distpath ".tmp/gui-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
+            packaging/windows_gui.spec
+
+      - name: Build private Windows worker in a separate process
+        shell: bash
+        env:
+          MPLCONFIGDIR: ${{ github.workspace }}/.tmp/worker-mpl-${{ matrix.repetition }}
+          PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/worker-pyi-${{ matrix.repetition }}
+        run: |
+          set -euo pipefail
+          .venv-worker/Scripts/python.exe -m PyInstaller --clean --noconfirm \
+            --workpath ".tmp/worker-work-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
+            --distpath ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
+            packaging/windows_worker.spec
+
+      - name: Assemble opaque worker runtime under GUI runtime
         shell: bash
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
-          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
-            app_name="MultiSOCIAL-Complete"
-          fi
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          python packaging/assemble_windows.py \
+            --gui ".tmp/gui-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/${app_name}" \
+            --worker ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/MultiSOCIAL-Worker" \
+            --output "dist/${app_name}"
+          python packaging/validate_windows_bundle.py --root "dist/${app_name}" \
+            --profile "${MULTISOCIAL_BUILD_PROFILE}"
+          python .github/scripts/validate_complete_bundle_layout.py
 
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            target="dist/${app_name}/${app_name}.exe"
-          else
-            target="dist/${app_name}.app/Contents/MacOS/${app_name}"
-          fi
-
-          if [[ ! -e "${target}" ]]; then
-            echo "Expected executable not found: ${target}" >&2
-            exit 1
-          fi
-
-          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 "${target}"
-
-      - name: Run packaged Windows analysis worker probe
-        if: runner.os == 'Windows'
+      - name: Run GUI-to-worker isolated launch and ten cold probes
         shell: bash
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
-          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
-            app_name="MultiSOCIAL-Complete"
-          fi
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          gui="dist/${app_name}/${app_name}.exe"
           worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
-          test -f "${worker}"
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 \
+            MULTISOCIAL_VERIFY_WORKER_LAUNCH=1 "${gui}"
           for attempt in $(seq 1 10); do
-            echo "Worker probe ${attempt}/10"
-            printf '%s\n' '{"protocol":1,"id":"probe-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages and messages[-1]['event']=='result', messages; runtime=messages[-1]['result']['runtime']; assert runtime['worker_runtime']['private_runtime'], runtime; assert runtime['worker_runtime']['mediapipe_bindings'], runtime"
+            printf '%s\n' '{"protocol":1,"id":"probe-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' |
+              "${worker}" |
+              python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m; r=m[-1]['result']['runtime']['worker_runtime']; assert r['private_runtime'] and not r['loaded_module_violations'],r"
           done
 
-      - name: Run packaged Windows audio-feature worker smoke
-        if: runner.os == 'Windows'
+      - name: Exercise packaged audio and pose native paths
         shell: bash
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
-          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then
-            app_name="MultiSOCIAL-Complete"
-          fi
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
           worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
-          mkdir -p .tmp/worker-smoke/features
-          python -c "import math,wave; p='.tmp/worker-smoke/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
-          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/worker-smoke/tone.wav"],"output_audio_features_folder":".tmp/worker-smoke/features"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
-          test -f .tmp/worker-smoke/features/tone.csv
+          mkdir -p .tmp/runtime-fixtures/features .tmp/runtime-fixtures/pose .tmp/runtime-fixtures/embed
+          python -c "import math,wave; p='.tmp/runtime-fixtures/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          .venv-worker/Scripts/python.exe -c "import cv2,numpy as np; w=cv2.VideoWriter('.tmp/runtime-fixtures/blank.avi',cv2.VideoWriter_fourcc(*'MJPG'),10,(160,120)); [w.write(np.zeros((120,160,3),dtype=np.uint8)) for _ in range(10)]; w.release()"
+          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav"],"output_audio_features_folder":".tmp/runtime-fixtures/features"}}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
+          test -f .tmp/runtime-fixtures/features/tone.csv
+          mkdir -p .tmp/runtime-fixtures/cancelled
+          printf '%s\n' \
+            '{"protocol":1,"id":"cancel","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav",".tmp/runtime-fixtures/tone.wav"],"output_audio_features_folder":".tmp/runtime-fixtures/cancelled"}}' \
+            '{"protocol":1,"id":"cancel","type":"cancel"}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m; assert m[-1]['result']['cancelled'],m"
+          test -z "$(find .tmp/runtime-fixtures/cancelled -type f -print -quit)"
+          for mode in false true; do
+            printf '%s\n' '{"protocol":1,"id":"pose-'"${mode}"'","type":"run","operation":"extract_pose","payload":{"video_files":[".tmp/runtime-fixtures/blank.avi"],"output_csv_folder":".tmp/runtime-fixtures/pose","multi_person":'"${mode}"'}}' |
+              "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
+          done
+          printf '%s\n' '{"protocol":1,"id":"embed","type":"run","operation":"embed_pose","payload":{"video_files":[".tmp/runtime-fixtures/blank.avi"],"output_csv_folder":".tmp/runtime-fixtures/pose","output_video_folder":".tmp/runtime-fixtures/embed","multi_person":false}}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
 
-      - name: Run manual Windows Complete diarization worker E2E
-        if: github.repository == 'Muneeb-ii/MultiSOCIAL_toolbox' && runner.os == 'Windows' && matrix.profile == 'complete' && inputs.run_windows_complete_e2e
+      - name: Run canonical packaged Whisper ASR
+        if: matrix.repetition == 1
+        shell: bash
+        env:
+          MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
+          mkdir -p .tmp/whisper/transcripts
+          printf '%s\n' '{"protocol":1,"id":"whisper","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav"],"output_transcripts_folder":".tmp/whisper/transcripts","word_timestamps":false,"enable_diarization":false}}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m; assert not m[-1]['result']['failed'],m"
+
+      - name: Run optional Complete diarization E2E
+        if: matrix.repetition == 1 && matrix.profile == 'complete' && (needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e)
         shell: bash
         env:
           MULTISOCIAL_CI_HF_TOKEN: ${{ secrets.MULTISOCIAL_CI_HF_TOKEN }}
         run: |
           set -euo pipefail
           test -n "${MULTISOCIAL_CI_HF_TOKEN}"
-          app_name="MultiSOCIAL-Complete"
-          worker="dist/${app_name}/worker/MultiSOCIAL-Worker.exe"
-          mkdir -p .tmp/worker-e2e/transcripts
-          python -c "import math,wave; p='.tmp/worker-e2e/silence.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          worker="dist/MultiSOCIAL-Complete/worker/MultiSOCIAL-Worker.exe"
+          mkdir -p .tmp/diarization/transcripts
           export MULTISOCIAL_WORKER_HF_TOKEN="${MULTISOCIAL_CI_HF_TOKEN}"
-          printf '%s\n' '{"protocol":1,"id":"e2e","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/worker-e2e/silence.wav"],"output_transcripts_folder":".tmp/worker-e2e/transcripts","word_timestamps":false,"enable_diarization":true}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
+          printf '%s\n' '{"protocol":1,"id":"e2e","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/runtime-fixtures/tone.wav"],"output_transcripts_folder":".tmp/diarization/transcripts","word_timestamps":false,"enable_diarization":true}}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
 
-      - name: Archive release bundle
+      - name: Archive canonical Windows build
+        if: matrix.repetition == 1
         shell: bash
-        env:
-          RUNNER_OS_NAME: ${{ runner.os }}
         run: |
           set -euo pipefail
-          profile="${MULTISOCIAL_BUILD_PROFILE}"
-          runner_os="$(echo "${RUNNER_OS_NAME}" | tr '[:upper:]' '[:lower:]')"
           app_name="MultiSOCIAL-Standard"
-          if [[ "${profile}" == "complete" ]]; then
-            app_name="MultiSOCIAL-Complete"
-          fi
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          mkdir -p release-artifacts workflow-artifacts
+          python -c "import shutil; shutil.make_archive('release-artifacts/${app_name}-windows','zip',root_dir='dist',base_dir='${app_name}')"
+          cp -R "dist/${app_name}" workflow-artifacts/
+          cp "release-artifacts/${app_name}-windows.zip" workflow-artifacts/
 
-          mkdir -p release-artifacts
-
-          if [[ "${runner_os}" == "macos" ]]; then
-            target="dist/${app_name}.app"
-            if [[ ! -d "${target}" ]]; then
-              echo "Expected build output not found: ${target}" >&2
-              exit 1
-            fi
-            ditto -c -k --sequesterRsrc --keepParent "${target}" "release-artifacts/${app_name}-${runner_os}.zip"
-          else
-            target="dist/${app_name}"
-            if [[ -d "${target}" ]]; then
-              python -c "import os,shutil; app='MultiSOCIAL-Complete' if os.environ['MULTISOCIAL_BUILD_PROFILE']=='complete' else 'MultiSOCIAL-Standard'; runner=os.environ['RUNNER_OS_NAME'].lower(); shutil.make_archive(f'release-artifacts/{app}-{runner}', 'zip', root_dir='dist', base_dir=app)"
-            elif [[ -f "${target}" ]]; then
-              cp "${target}" "release-artifacts/${app_name}-${runner_os}${target##${app_name}}"
-            else
-              echo "Expected build output not found: ${target}" >&2
-              exit 1
-            fi
-          fi
-
-      - name: Prepare workflow artifact
-        shell: bash
-        env:
-          RUNNER_OS_NAME: ${{ runner.os }}
-        run: |
-          set -euo pipefail
-          profile="${MULTISOCIAL_BUILD_PROFILE}"
-          runner_os="$(echo "${RUNNER_OS_NAME}" | tr '[:upper:]' '[:lower:]')"
-          app_name="MultiSOCIAL-Standard"
-          if [[ "${profile}" == "complete" ]]; then
-            app_name="MultiSOCIAL-Complete"
-          fi
-
-          mkdir -p workflow-artifacts
-
-          if [[ "${runner_os}" == "macos" ]]; then
-            cp -R "dist/${app_name}.app" "workflow-artifacts/"
-          else
-            cp -R "dist/${app_name}" "workflow-artifacts/"
-          fi
-
-      - name: Upload workflow artifact
+      - name: Upload canonical Windows workflow artifact
+        if: matrix.repetition == 1
         uses: actions/upload-artifact@v5
         with:
           name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-${{ runner.os }}
           path: workflow-artifacts/*
 
-      - name: Upload release assets to upstream release
-        if: needs.prepare.outputs.should_publish_release == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.release_tag }}
-          files: release-artifacts/*
-
   windows-client-compat:
-    # Execute the release-built Windows x64 bundles on the Windows 10-family
-    # runner. This is deliberately a runtime check, not a second artifact build.
-    if: ${{ needs.build.result == 'success' && !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.repository == 'Tahiya31/MultiSOCIAL_toolbox') }}
-    needs: [prepare, build]
+    needs: [prepare, windows-build]
     strategy:
       fail-fast: false
       matrix:
@@ -395,63 +296,90 @@ jobs:
     env:
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
     steps:
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
-
-      - name: Download release-built Windows bundle
-        uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v5
         with:
           name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-Windows
-          path: .tmp/windows-client-bundle
+          path: .tmp/download
 
-      - name: Validate Windows x64 compatibility host
+      - name: Relocate bundle to an installation-like path
         shell: pwsh
         run: |
-          $version = [Environment]::OSVersion.Version
-          if (-not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) { throw "Windows x64 is required" }
-          if ($version.Major -lt 10) { throw "Windows 10 or later is required" }
-          Write-Host "Compatibility host: $([Environment]::OSVersion.VersionString) ($env:PROCESSOR_ARCHITECTURE)"
+          $installRoot = Join-Path $PWD ".tmp\Installed Apps\Üser Validation"
+          New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+          Get-ChildItem ".tmp\download" | Copy-Item -Destination $installRoot -Recurse
+          "INSTALL_ROOT=$installRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Run downloaded GUI import smoke
+      - name: Run downloaded GUI launch, worker probes, and audio smoke
         shell: bash
+        env:
+          MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
-          if [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]]; then app_name="MultiSOCIAL-Complete"; fi
-          gui="$(find .tmp/windows-client-bundle -name "${app_name}.exe" -type f -print -quit)"
-          test -n "${gui}"
-          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 "${gui}"
-
-      - name: Run downloaded Windows worker probe and audio smoke
-        shell: bash
-        run: |
-          set -euo pipefail
-          worker="$(find .tmp/windows-client-bundle -name MultiSOCIAL-Worker.exe -type f -print -quit)"
-          test -n "${worker}"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          gui="$(find "${INSTALL_ROOT}" -name "${app_name}.exe" -type f -print -quit)"
+          worker="$(find "${INSTALL_ROOT}" -name MultiSOCIAL-Worker.exe -type f -print -quit)"
+          test -n "${gui}" && test -n "${worker}"
+          MULTISOCIAL_IMPORT_SMOKE_TEST=1 MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET=1 \
+            MULTISOCIAL_VERIFY_WORKER_LAUNCH=1 "${gui}"
           for attempt in $(seq 1 10); do
-            echo "Downloaded worker probe ${attempt}/10"
-            printf '%s\n' '{"protocol":1,"id":"probe-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; result=messages[-1]['result']; runtime=result['runtime']; assert messages[-1]['event']=='result', messages; assert runtime['architecture']=='x64' and runtime['windows_major'] >= 10, runtime; assert runtime['worker_runtime']['private_runtime'], runtime; assert runtime['worker_runtime']['mediapipe_bindings'], runtime"
+            printf '%s\n' '{"protocol":1,"id":"compat-'"${attempt}"'","type":"run","operation":"probe","payload":{"profile":"'"${MULTISOCIAL_BUILD_PROFILE}"'"}}' |
+              "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
           done
-          mkdir -p .tmp/windows-client-smoke/features
-          python -c "import math,wave; p='.tmp/windows-client-smoke/tone.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
-          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/windows-client-smoke/tone.wav"],"output_audio_features_folder":".tmp/windows-client-smoke/features"}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
-          test -f .tmp/windows-client-smoke/features/tone.csv
+          mkdir -p .tmp/compat/features
+          python -c "import math,wave; w=wave.open('.tmp/compat/tone.wav','w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          printf '%s\n' '{"protocol":1,"id":"features","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/compat/tone.wav"],"output_audio_features_folder":".tmp/compat/features"}}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
+          test -f .tmp/compat/features/tone.csv
+          mkdir -p .tmp/compat/cancelled .tmp/compat/pose .tmp/compat/transcripts
+          printf '%s\n' \
+            '{"protocol":1,"id":"cancel","type":"run","operation":"extract_audio_features","payload":{"audio_files":[".tmp/compat/tone.wav",".tmp/compat/tone.wav"],"output_audio_features_folder":".tmp/compat/cancelled"}}' \
+            '{"protocol":1,"id":"cancel","type":"cancel"}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result' and m[-1]['result']['cancelled'],m"
+          test -z "$(find .tmp/compat/cancelled -type f -print -quit)"
+          ffmpeg="$(find "$(dirname "${worker}")" -iname 'ffmpeg*.exe' -type f -print -quit)"
+          test -n "${ffmpeg}"
+          "${ffmpeg}" -y -f lavfi -i color=c=black:s=160x120:d=1 -r 10 .tmp/compat/blank.avi
+          for mode in false true; do
+            printf '%s\n' '{"protocol":1,"id":"pose-'"${mode}"'","type":"run","operation":"extract_pose","payload":{"video_files":[".tmp/compat/blank.avi"],"output_csv_folder":".tmp/compat/pose","multi_person":'"${mode}"'}}' |
+              "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result',m"
+          done
+          printf '%s\n' '{"protocol":1,"id":"whisper","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/compat/tone.wav"],"output_transcripts_folder":".tmp/compat/transcripts","word_timestamps":false,"enable_diarization":false}}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result' and not m[-1]['result']['failed'],m"
 
-      - name: Run manual Windows 10-family Complete diarization E2E
-        if: github.repository == 'Muneeb-ii/MultiSOCIAL_toolbox' && matrix.profile == 'complete' && inputs.run_windows_complete_e2e
+      - name: Run qualified Complete diarization after relocation
+        if: matrix.profile == 'complete' && (needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e)
         shell: bash
         env:
           MULTISOCIAL_CI_HF_TOKEN: ${{ secrets.MULTISOCIAL_CI_HF_TOKEN }}
+          MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
         run: |
           set -euo pipefail
           test -n "${MULTISOCIAL_CI_HF_TOKEN}"
-          worker="$(find .tmp/windows-client-bundle -name MultiSOCIAL-Worker.exe -type f -print -quit)"
-          mkdir -p .tmp/windows-client-e2e/transcripts
-          python -c "import math,wave; p='.tmp/windows-client-e2e/silence.wav'; w=wave.open(p,'w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b''.join(int(1000*math.sin(2*math.pi*220*i/16000)).to_bytes(2,'little',signed=True) for i in range(16000))); w.close()"
+          worker="$(find "${INSTALL_ROOT}" -name MultiSOCIAL-Worker.exe -type f -print -quit)"
+          mkdir -p .tmp/compat/diarized
           export MULTISOCIAL_WORKER_HF_TOKEN="${MULTISOCIAL_CI_HF_TOKEN}"
-          printf '%s\n' '{"protocol":1,"id":"e2e","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/windows-client-e2e/silence.wav"],"output_transcripts_folder":".tmp/windows-client-e2e/transcripts","word_timestamps":false,"enable_diarization":true}}' | "${worker}" | python -c "import json,sys; messages=[json.loads(line) for line in sys.stdin if line.strip()]; assert messages[-1]['event']=='result', messages"
+          printf '%s\n' '{"protocol":1,"id":"diarization","type":"run","operation":"extract_transcripts","payload":{"audio_files":[".tmp/compat/tone.wav"],"output_transcripts_folder":".tmp/compat/diarized","word_timestamps":false,"enable_diarization":true}}' |
+            "${worker}" | python -c "import json,sys; m=[json.loads(x) for x in sys.stdin if x.strip()]; assert m[-1]['event']=='result' and not m[-1]['result']['failed'],m"
+
+  publish:
+    if: needs.prepare.outputs.should_publish_release == 'true'
+    needs: [prepare, macos-build, windows-build, windows-client-compat]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: MultiSOCIAL-${{ needs.prepare.outputs.app_version }}-*
+          path: qualified-artifacts
+          merge-multiple: true
+      - name: Create qualified release and upload four assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: qualified-artifacts/*.zip

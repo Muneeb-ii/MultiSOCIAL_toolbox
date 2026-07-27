@@ -304,7 +304,7 @@ class AudioProcessor:
 
         # Use standard large-v3-turbo for better speed/accuracy balance than distil
         # or fallback to large-v3 if turbo is unavailable
-        model_id = "openai/whisper-large-v3-turbo"
+        model_id = os.environ.get("MULTISOCIAL_WHISPER_MODEL_ID", "openai/whisper-large-v3-turbo")
 
         if progress_callback:
             progress_callback(10)
