@@ -1,5 +1,42 @@
 """Checked-in dynamic import manifests for locked Windows worker dependencies."""
 
+TORCH_RUNTIME_HIDDEN_IMPORTS = [
+    "torch",
+    "torch._C",
+    "torch.amp",
+    "torch.autograd",
+    "torch.backends",
+    "torch.backends.cpu",
+    "torch.backends.mkl",
+    "torch.cuda",
+    "torch.distributed",
+    "torch.distributions",
+    "torch.fft",
+    "torch.hub",
+    "torch.jit",
+    "torch.linalg",
+    "torch.nn",
+    "torch.nn.functional",
+    "torch.nn.init",
+    "torch.nn.modules",
+    "torch.optim",
+    "torch.serialization",
+    "torch.special",
+    "torch.utils",
+    "torch.utils.checkpoint",
+    "torch.utils.data",
+    "torch.utils.data.dataloader",
+]
+
+TORCHAUDIO_RUNTIME_HIDDEN_IMPORTS = [
+    "torchaudio",
+    "torchaudio._extension",
+    "torchaudio.backend",
+    "torchaudio.functional",
+    "torchaudio.lib._torchaudio",
+    "torchaudio.transforms",
+]
+
 YOLOV5_INFERENCE_HIDDEN_IMPORTS = [
     "ultralytics.utils",
     "ultralytics.utils.checks",

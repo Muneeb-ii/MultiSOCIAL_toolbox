@@ -91,6 +91,20 @@ def test_graph_assertions_reject_native_dll_and_wx_binary_names():
 
 def test_vc_runtime_collection_selects_one_complete_directory(tmp_path, monkeypatch):
     support = _load_packaging_module("windows_build_support")
+    assert support.VC_RUNTIME_NAMES == {
+        "concrt140.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "msvcp140_2.dll",
+        "msvcp140_atomic_wait.dll",
+        "msvcp140_codecvt_ids.dll",
+        "vcamp140.dll",
+        "vccorlib140.dll",
+        "vcomp140.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "vcruntime140_threads.dll",
+    }
     package = tmp_path / "msvc_runtime"
     complete = package / "x64"
     package.mkdir()
@@ -293,6 +307,25 @@ def test_environment_audit_rejects_distributions_added_after_locked_install(tmp_
 
     audit.assert_matches_lock({"example-package": "1.2.3", "pip": "25.0"}, lock)
 
+
+def test_environment_audit_compares_versions_using_pep440_normalization(tmp_path):
+    audit = _load_packaging_module("audit_windows_environment")
+    lock = tmp_path / "worker-lock.txt"
+    lock.write_text(
+        "thop==0.1.1.post2209072238 \\\n"
+        "    --hash=sha256:" + "0" * 64 + "\n",
+        encoding="utf-8",
+    )
+
+    audit.assert_matches_lock(
+        {"thop": "0.1.1-2209072238", "pip": "25.0"},
+        lock,
+    )
+
+    with pytest.raises(RuntimeError, match=r"thop==0\.1\.2"):
+        audit.assert_matches_lock({"thop": "0.1.2", "pip": "25.0"}, lock)
+
+
 def test_environment_audit_rejects_unhashed_and_duplicate_lock_entries(tmp_path):
     audit = _load_packaging_module("audit_windows_environment")
     unhashed = tmp_path / "unhashed.txt"
@@ -310,3 +343,18 @@ def test_environment_audit_rejects_unhashed_and_duplicate_lock_entries(tmp_path)
     )
     with pytest.raises(RuntimeError, match="Duplicate locked requirement"):
         audit.locked_versions(duplicate)
+
+
+def test_environment_audit_checks_manifest_paths_without_importing_packages(tmp_path):
+    audit = _load_packaging_module("audit_windows_environment")
+    package = tmp_path / "example" / "runtime"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "standalone.py").write_text("", encoding="utf-8")
+
+    missing = audit.missing_manifest_modules(
+        ["example.runtime", "standalone", "missing.module"],
+        [tmp_path],
+    )
+
+    assert missing == ["missing.module"]

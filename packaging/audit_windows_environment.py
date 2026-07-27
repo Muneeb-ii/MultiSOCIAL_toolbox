@@ -4,8 +4,19 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import importlib.machinery
 import re
+import sys
 from pathlib import Path
+
+from packaging.version import InvalidVersion, Version
+from windows_hiddenimports import (
+    COMPLETE_HIDDEN_IMPORTS,
+    STANDARD_HIDDEN_IMPORTS,
+    TORCHAUDIO_RUNTIME_HIDDEN_IMPORTS,
+    TORCH_RUNTIME_HIDDEN_IMPORTS,
+    YOLOV5_INFERENCE_HIDDEN_IMPORTS,
+)
 
 
 NATIVE_ANALYSIS_DISTRIBUTIONS = {
@@ -26,6 +37,17 @@ NATIVE_ANALYSIS_DISTRIBUTIONS = {
 
 def canonicalize_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).casefold()
+
+
+def versions_match(installed: str, locked: str) -> bool:
+    """Compare distribution versions using PEP 440 normalization."""
+    try:
+        return Version(installed) == Version(locked)
+    except InvalidVersion as exc:
+        raise RuntimeError(
+            f"Invalid distribution version while comparing installed {installed!r} "
+            f"with locked {locked!r}"
+        ) from exc
 
 
 def installed_versions() -> dict[str, str]:
@@ -83,7 +105,7 @@ def assert_matches_lock(installed: dict[str, str], lock_path: Path) -> None:
     mismatched = sorted(
         f"{name}=={installed[name]} (locked {locked[name]})"
         for name in set(installed) & set(locked)
-        if installed[name] != locked[name]
+        if not versions_match(installed[name], locked[name])
     )
     failures = []
     if unexpected:
@@ -94,6 +116,50 @@ def assert_matches_lock(installed: dict[str, str], lock_path: Path) -> None:
         failures.append("version mismatches: " + ", ".join(mismatched))
     if failures:
         raise RuntimeError("Installed environment differs from hashed lock; " + "; ".join(failures))
+
+
+def missing_manifest_modules(
+    module_names: list[str],
+    search_roots: list[Path] | None = None,
+) -> list[str]:
+    """Check manifest paths without importing native package parents."""
+    roots = search_roots or [
+        Path(__file__).resolve().parent.parent / "src",
+        *(Path(value) for value in sys.path if value),
+    ]
+    suffixes = importlib.machinery.all_suffixes()
+    missing = []
+    for module_name in module_names:
+        relative = Path(*module_name.split("."))
+        found = False
+        for root in roots:
+            candidate = root / relative
+            if candidate.is_dir() or any(
+                candidate.with_suffix(suffix).is_file()
+                for suffix in suffixes
+            ):
+                found = True
+                break
+        if not found:
+            missing.append(module_name)
+    return sorted(set(missing), key=str.casefold)
+
+
+def assert_worker_manifests_exist(installed_names: set[str]) -> None:
+    modules = [
+        *STANDARD_HIDDEN_IMPORTS,
+        *TORCH_RUNTIME_HIDDEN_IMPORTS,
+        *YOLOV5_INFERENCE_HIDDEN_IMPORTS,
+    ]
+    if "pyannote-audio" in installed_names:
+        modules.extend(COMPLETE_HIDDEN_IMPORTS)
+        modules.extend(TORCHAUDIO_RUNTIME_HIDDEN_IMPORTS)
+    missing = missing_manifest_modules(modules)
+    if missing:
+        raise RuntimeError(
+            "Windows worker manifest references missing modules: "
+            + ", ".join(missing[:30])
+        )
 
 
 def audit(kind: str, lock_path: Path | None = None) -> None:
@@ -123,6 +189,7 @@ def audit(kind: str, lock_path: Path | None = None) -> None:
     )
     if cv2_owners != ["opencv-contrib-python"]:
         raise RuntimeError("cv2 namespace ownership is ambiguous: " + repr(cv2_owners))
+    assert_worker_manifests_exist(names)
 
 
 def main() -> None:

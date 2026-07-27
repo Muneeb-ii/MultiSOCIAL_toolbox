@@ -111,9 +111,16 @@ def test_windows_dynamic_manifests_do_not_discover_transformers_or_diarization_r
     worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
     manifest = (ROOT / "packaging" / "windows_hiddenimports.py").read_text(encoding="utf-8")
     transformer_hook = (ROOT / "hooks" / "hook-transformers.py").read_text(encoding="utf-8")
+    windows_hooks = (
+        ROOT / "packaging" / "windows_hooks"
+    )
 
     for package in ("transformers", "pyannote", "speechbrain", "torchaudio", "huggingface_hub"):
         assert f'collect_submodules("{package}")' not in worker_spec
+    for hook_name in ("hook-torch.py", "hook-torchaudio.py", "hook-transformers.py"):
+        assert "collect_submodules" not in (windows_hooks / hook_name).read_text(encoding="utf-8")
+    assert "TORCH_RUNTIME_HIDDEN_IMPORTS" in manifest
+    assert "TORCHAUDIO_RUNTIME_HIDDEN_IMPORTS" in manifest
     assert "transformers.models.whisper.modeling_whisper" in manifest
     assert "pyannote.audio.pipelines.speaker_diarization" in manifest
     assert "transformers.quantizers" in transformer_hook

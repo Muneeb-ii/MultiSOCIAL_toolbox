@@ -10,7 +10,20 @@ from pathlib import Path
 from typing import Iterable
 
 
-VC_RUNTIME_NAMES = {"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"}
+VC_RUNTIME_NAMES = {
+    "concrt140.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "msvcp140_2.dll",
+    "msvcp140_atomic_wait.dll",
+    "msvcp140_codecvt_ids.dll",
+    "vcamp140.dll",
+    "vccorlib140.dll",
+    "vcomp140.dll",
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "vcruntime140_threads.dll",
+}
 GUI_FORBIDDEN_MODULE_ROOTS = {
     "analysis_worker",
     "audio",

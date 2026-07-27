@@ -15,6 +15,7 @@ def test_yolov5_runtime_dependencies_are_packaged():
     spec_text = (root / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
     hook_text = (root / "packaging" / "windows_hooks" / "hook-yolov5.py").read_text(encoding="utf-8")
     ultralytics_hook = (root / "packaging" / "windows_hooks" / "hook-ultralytics.py").read_text(encoding="utf-8")
+    torch_hook = (root / "packaging" / "windows_hooks" / "hook-torch.py").read_text(encoding="utf-8")
     manifest_text = (root / "packaging" / "windows_hiddenimports.py").read_text(encoding="utf-8")
 
     assert '"ultralytics",' in spec_text
@@ -27,6 +28,8 @@ def test_yolov5_runtime_dependencies_are_packaged():
     assert '"yolov5", "ultralytics", "torch", "torchvision"' in hook_text
     assert 'collect_data_files("ultralytics", include_py_files=False)' in ultralytics_hook
     assert '"ultralytics.trackers"' in ultralytics_hook
+    assert "collect_submodules" not in torch_hook
+    assert "TORCH_RUNTIME_HIDDEN_IMPORTS" in torch_hook
     assert '"yolov5.models.yolo"' in manifest_text
 
 

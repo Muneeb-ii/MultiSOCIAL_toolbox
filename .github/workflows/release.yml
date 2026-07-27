@@ -151,6 +151,8 @@ jobs:
             packaging/windows_gui.spec \
             packaging/windows_worker.spec \
             packaging/windows_hooks/hook-pyannote.audio.py \
+            packaging/windows_hooks/hook-torch.py \
+            packaging/windows_hooks/hook-torchaudio.py \
             packaging/windows_hooks/hook-transformers.py \
             packaging/windows_hooks/hook-ultralytics.py \
             packaging/windows_hooks/hook-yolov5.py \

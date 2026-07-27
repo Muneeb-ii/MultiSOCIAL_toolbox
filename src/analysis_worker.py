@@ -224,6 +224,7 @@ def _native_module_violations(
         "_framework_bindings",
         "audresample",
         "c10",
+        "concrt140",
         "fbgemm",
         "libiomp",
         "mediapipe",
@@ -231,6 +232,9 @@ def _native_module_violations(
         "opencv",
         "smileapi",
         "torch",
+        "vcamp140",
+        "vccorlib140",
+        "vcomp140",
         "vcruntime140",
     )
     violations = []
