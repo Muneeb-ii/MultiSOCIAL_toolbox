@@ -52,6 +52,8 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "Relocate bundle to an installation-like path" in workflow
     assert "Run downloaded GUI launch, worker probes, and audio smoke" in workflow
     assert "repetition: [1, 2, 3]" in workflow
+    assert "Verify committed Windows packaging inputs" in workflow
+    assert "git ls-files --error-unmatch" in workflow
     assert "packaging/windows_gui.spec" in workflow
     assert "packaging/windows_worker.spec" in workflow
     assert "MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny" in workflow
