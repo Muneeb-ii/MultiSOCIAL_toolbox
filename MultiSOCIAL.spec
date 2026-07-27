@@ -167,6 +167,11 @@ def prefix_collection_entries(prefix, entries):
     return prefixed
 
 hiddenimports = [
+    # app.py loads these dynamically to keep the Windows GUI independent of
+    # the worker-native graph. The full macOS app and Windows worker require
+    # them as explicit hidden imports.
+    "audio",
+    "pose",
     "backports",
     "backports.tarfile",
     "pkg_resources",

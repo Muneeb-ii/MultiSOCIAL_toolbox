@@ -46,6 +46,18 @@ def test_windows_gui_uses_the_private_worker_without_path_mutation():
     assert "_enable_worker_tensor_loader" in worker_source
 
 
+def test_windows_gui_does_not_statically_import_the_worker_native_graph():
+    app_source = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+    spec_source = (ROOT / "MultiSOCIAL.spec").read_text(encoding="utf-8")
+
+    assert "from audio import AudioProcessor" not in app_source
+    assert "from pose import PoseProcessor" not in app_source
+    assert 'importlib.import_module("audio").AudioProcessor' in app_source
+    assert 'importlib.import_module("pose").PoseProcessor' in app_source
+    assert '"audio",' in spec_source
+    assert '"pose",' in spec_source
+
+
 def test_windows_spec_builds_console_worker_and_workflow_probes_it():
     spec_source = (ROOT / "MultiSOCIAL.spec").read_text(encoding="utf-8")
     workflow_source = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

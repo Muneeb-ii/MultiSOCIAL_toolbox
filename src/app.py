@@ -5,6 +5,7 @@ This is the main script for multisocial app
 
 # Import necessary system and utility modules
 import glob
+import importlib
 import json
 import os
 import sys
@@ -57,9 +58,11 @@ def _get_pose_processor_class():
     if is_windows_worker_enabled():
         return WindowsPoseProcessor
     if _PoseProcessorCls is None:
-        from pose import PoseProcessor
-
-        _PoseProcessorCls = PoseProcessor
+        # This must remain dynamic: on Windows the private worker, not the
+        # GUI package, owns the MediaPipe/OpenCV dependency graph. macOS keeps
+        # the same in-process implementation and includes this module via the
+        # macOS-only PyInstaller hidden-import list.
+        _PoseProcessorCls = importlib.import_module("pose").PoseProcessor
     return _PoseProcessorCls
 
 
@@ -69,7 +72,9 @@ if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
     if is_windows_worker_enabled():
         AudioProcessor = WindowsAudioProcessor
     else:
-        from audio import AudioProcessor
+        # See _get_pose_processor_class: do not let Windows GUI analysis pull
+        # native audio dependencies into the GUI runtime.
+        AudioProcessor = importlib.import_module("audio").AudioProcessor
 else:
     AudioProcessor = None
 
