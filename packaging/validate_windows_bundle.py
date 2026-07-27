@@ -8,6 +8,12 @@ from pathlib import Path
 from windows_build_support import PE_MACHINE_AMD64, VC_RUNTIME_NAMES, _pe_machine
 
 PYTHON_DLL_PREFIX = "python3"
+VERSIONED_PYTHON_RUNTIME_DLL = "python310.dll"
+STABLE_ABI_PYTHON_RUNTIME_DLL = "python3.dll"
+ALLOWED_PYTHON_RUNTIME_DLLS = {
+    VERSIONED_PYTHON_RUNTIME_DLL,
+    STABLE_ABI_PYTHON_RUNTIME_DLL,
+}
 GUI_FORBIDDEN_FILE_MARKERS = {
     "_framework_bindings",
     "audresample",
@@ -33,18 +39,46 @@ def _runtime_files(root: Path, excluded: Path | None = None) -> list[Path]:
     return files
 
 
+def _python_runtime_dlls(root: Path) -> list[Path]:
+    return sorted(
+        (
+            path
+            for path in root.iterdir()
+            if path.is_file()
+            and path.name.casefold().startswith(PYTHON_DLL_PREFIX)
+            and path.suffix.casefold() == ".dll"
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+
+
 def _assert_runtime_root(root: Path, executable: str, excluded: Path | None = None) -> None:
     if not (root / executable).is_file():
         raise RuntimeError(f"Missing runtime executable: {root / executable}")
-    python_dlls = list(root.glob("python3*.dll"))
-    if len(python_dlls) != 1:
-        raise RuntimeError(f"Expected one Python runtime DLL at {root}, found {len(python_dlls)}")
+    python_dlls = _python_runtime_dlls(root)
+    python_dll_names = {path.name.casefold() for path in python_dlls}
+    unexpected_python_dlls = sorted(python_dll_names - ALLOWED_PYTHON_RUNTIME_DLLS)
+    if VERSIONED_PYTHON_RUNTIME_DLL not in python_dll_names or unexpected_python_dlls:
+        found = ", ".join(path.name for path in python_dlls) or "<none>"
+        expected = (
+            f"{VERSIONED_PYTHON_RUNTIME_DLL}, with optional "
+            f"{STABLE_ABI_PYTHON_RUNTIME_DLL}"
+        )
+        details = (
+            f"; unexpected: {', '.join(unexpected_python_dlls)}"
+            if unexpected_python_dlls
+            else ""
+        )
+        raise RuntimeError(
+            f"Invalid Python runtime DLL set at {root}; expected {expected}; "
+            f"found: {found}{details}"
+        )
     missing_vc = sorted(name for name in VC_RUNTIME_NAMES if not (root / name).is_file())
     if missing_vc:
         raise RuntimeError(f"Missing VC runtime files at {root}: {', '.join(missing_vc)}")
     architecture_files = [
         root / executable,
-        python_dlls[0],
+        *python_dlls,
         *(root / name for name in sorted(VC_RUNTIME_NAMES)),
     ]
     wrong_architecture = [

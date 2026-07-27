@@ -27,6 +27,16 @@ def _load_packaging_module(name: str):
     return module
 
 
+def _create_runtime_root(root, executable, vc_runtime_names, *, stable_abi=False):
+    root.mkdir(parents=True)
+    (root / executable).touch()
+    (root / "python310.dll").touch()
+    if stable_abi:
+        (root / "python3.dll").touch()
+    for name in vc_runtime_names:
+        (root / name).touch()
+
+
 def test_backend_contract_exposes_gui_factories_and_pose_lookup():
     source = (ROOT / "src" / "analysis_backend.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -179,6 +189,153 @@ def test_runtime_root_rejects_nested_python_dll(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="nested Python/VC runtime"):
         validator._assert_runtime_root(root, "app.exe")
+
+
+@pytest.mark.parametrize("include_stable_abi", [False, True])
+def test_runtime_root_accepts_supported_python_runtime_set(
+    tmp_path,
+    monkeypatch,
+    include_stable_abi,
+):
+    validator = _load_packaging_module("validate_windows_bundle")
+    checked = []
+
+    def record_machine(path):
+        checked.append(path.name)
+        return validator.PE_MACHINE_AMD64
+
+    monkeypatch.setattr(validator, "_pe_machine", record_machine)
+    root = tmp_path / "runtime"
+    root.mkdir()
+    (root / "app.exe").touch()
+    (root / "python310.dll").touch()
+    if include_stable_abi:
+        (root / "python3.dll").touch()
+    for name in validator.VC_RUNTIME_NAMES:
+        (root / name).touch()
+
+    validator._assert_runtime_root(root, "app.exe")
+
+    assert "python310.dll" in checked
+    assert ("python3.dll" in checked) is include_stable_abi
+
+
+@pytest.mark.parametrize(
+    ("runtime_names", "unexpected"),
+    [
+        ([], None),
+        (["python3.dll"], None),
+        (["python310.dll", "python311.dll"], "python311.dll"),
+        (["python310.dll", "python310_d.dll"], "python310_d.dll"),
+    ],
+)
+def test_runtime_root_rejects_invalid_python_runtime_set(
+    tmp_path,
+    monkeypatch,
+    runtime_names,
+    unexpected,
+):
+    validator = _load_packaging_module("validate_windows_bundle")
+    monkeypatch.setattr(
+        validator,
+        "_pe_machine",
+        lambda _path: validator.PE_MACHINE_AMD64,
+    )
+    root = tmp_path / "runtime"
+    root.mkdir()
+    (root / "app.exe").touch()
+    for name in runtime_names:
+        (root / name).touch()
+
+    with pytest.raises(RuntimeError, match="Invalid Python runtime DLL set") as error:
+        validator._assert_runtime_root(root, "app.exe")
+
+    message = str(error.value)
+    assert "python310.dll" in message
+    if unexpected:
+        assert unexpected in message
+    elif runtime_names:
+        assert runtime_names[0] in message
+    else:
+        assert "<none>" in message
+
+
+def test_runtime_root_rejects_non_amd64_stable_abi_dll(tmp_path, monkeypatch):
+    validator = _load_packaging_module("validate_windows_bundle")
+    root = tmp_path / "runtime"
+    root.mkdir()
+    (root / "app.exe").touch()
+    (root / "python310.dll").touch()
+    (root / "python3.dll").touch()
+    for name in validator.VC_RUNTIME_NAMES:
+        (root / name).touch()
+    monkeypatch.setattr(
+        validator,
+        "_pe_machine",
+        lambda path: 0x14C if path.name == "python3.dll" else validator.PE_MACHINE_AMD64,
+    )
+
+    with pytest.raises(RuntimeError, match="non-AMD64.*python3.dll"):
+        validator._assert_runtime_root(root, "app.exe")
+
+
+def test_runtime_root_rejects_nested_stable_abi_python_dll(tmp_path, monkeypatch):
+    validator = _load_packaging_module("validate_windows_bundle")
+    monkeypatch.setattr(
+        validator,
+        "_pe_machine",
+        lambda _path: validator.PE_MACHINE_AMD64,
+    )
+    root = tmp_path / "runtime"
+    nested = root / "native"
+    nested.mkdir(parents=True)
+    (root / "app.exe").touch()
+    (root / "python310.dll").touch()
+    (root / "python3.dll").touch()
+    (nested / "python3.dll").touch()
+    for name in validator.VC_RUNTIME_NAMES:
+        (root / name).touch()
+
+    with pytest.raises(RuntimeError, match=r"nested Python/VC runtime.*python3\.dll"):
+        validator._assert_runtime_root(root, "app.exe")
+
+
+def test_full_standard_bundle_validation_accepts_two_isolated_runtime_sets(
+    tmp_path,
+    monkeypatch,
+):
+    validator = _load_packaging_module("validate_windows_bundle")
+    monkeypatch.setattr(
+        validator,
+        "_pe_machine",
+        lambda _path: validator.PE_MACHINE_AMD64,
+    )
+    root = tmp_path / "MultiSOCIAL-Standard"
+    worker = root / "worker"
+    _create_runtime_root(
+        root,
+        "MultiSOCIAL-Standard.exe",
+        validator.VC_RUNTIME_NAMES,
+    )
+    _create_runtime_root(
+        worker,
+        "MultiSOCIAL-Worker.exe",
+        validator.VC_RUNTIME_NAMES,
+        stable_abi=True,
+    )
+    required_worker_files = [
+        worker / "audresample/core/bin/win_amd64/audresample.dll",
+        worker / "opensmile/core/bin/win_amd64/SMILEapi.dll",
+        worker / "mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite",
+        worker / "mediapipe/python/_framework_bindings.pyd",
+        worker / "cv2/cv2.pyd",
+        worker / "torch/lib/torch_cpu.dll",
+    ]
+    for path in required_worker_files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    validator.validate(root, "standard")
 
 
 def test_windows_locks_have_disjoint_gui_and_native_ownership():
