@@ -588,6 +588,13 @@ def _configure_worker_native_loader() -> None:
     """Install the MediaPipe-safe DLL phase after the worker—not wx—has started."""
     if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
         return
+    # PyInstaller's Windows bootloader configures a process-wide DLL directory.
+    # Clear any inherited GUI directory in the process that will actually import
+    # MediaPipe, then register only the private worker locations below.
+    try:
+        ctypes.windll.kernel32.SetDllDirectoryW(None)
+    except (AttributeError, OSError):
+        pass
     from runtime_hook_dlls import configure_windows_dll_search_path
 
     bundle_root = getattr(sys, "_MEIPASS", None)

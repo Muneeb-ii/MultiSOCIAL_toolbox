@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -426,6 +427,17 @@ def test_staged_output_names_are_scoped_to_request_id(tmp_path):
         assert os.path.basename(staged).startswith(
             ".multisocial-worker-request-123-"
         )
+
+
+def test_worker_resets_its_dll_directory_before_registering_private_native_paths():
+    worker_source = (Path(__file__).resolve().parents[1] / "src" / "analysis_worker.py").read_text(
+        encoding="utf-8"
+    )
+
+    reset = "ctypes.windll.kernel32.SetDllDirectoryW(None)"
+    register = "configure_windows_dll_search_path(bundle_root, include_tensor_runtime=False)"
+    assert reset in worker_source
+    assert worker_source.index(reset) < worker_source.index(register)
 
 def test_packaged_smoke_request_writes_redacted_structured_failure(tmp_path, monkeypatch):
     import worker_backend
