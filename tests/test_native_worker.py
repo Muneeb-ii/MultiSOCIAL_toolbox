@@ -209,15 +209,25 @@ def test_worker_payload_paths_are_absolute_before_worker_cwd_changes(tmp_path, m
     ]]
 
 
-def test_packaged_windows_spawn_does_not_mutate_gui_dll_directory(monkeypatch):
+def test_packaged_windows_spawn_temporarily_clears_and_restores_gui_dll_directory(monkeypatch):
     import native_worker_client
 
     sentinel = object()
+    calls = []
+    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
+    monkeypatch.setattr(native_worker_client.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(native_worker_client, "_windows_dll_directory", lambda: r"C:\\gui-runtime")
+    monkeypatch.setattr(
+        native_worker_client,
+        "_set_windows_dll_directory",
+        lambda directory: calls.append(directory) or True,
+    )
     monkeypatch.setattr(native_worker_client.subprocess, "Popen", lambda *args, **kwargs: sentinel)
 
     result = native_worker_client._spawn_worker(["MultiSOCIAL-Worker.exe"])
 
     assert result is sentinel
+    assert calls == [None, r"C:\\gui-runtime"]
 
 
 def test_worker_client_preserves_a_caller_supplied_diagnostic_path(tmp_path, monkeypatch):

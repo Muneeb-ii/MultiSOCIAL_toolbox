@@ -161,4 +161,5 @@ COMPLETE_HIDDEN_IMPORTS = [
     "speechbrain.utils.torch_audio_backend",
     "torchaudio",
     "torchmetrics",
+    "transformers.integrations.ggml",
 ]

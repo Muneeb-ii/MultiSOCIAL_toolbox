@@ -26,6 +26,7 @@ WORKER_TOKEN_ENV = "MULTISOCIAL_WORKER_HF_TOKEN"
 WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
 WORKER_EXECUTABLE_NAME = "MultiSOCIAL-Worker.exe"
 WORKER_LAUNCHER_NAME = "MultiSOCIAL-Worker-Launcher.exe"
+_WINDOWS_WORKER_SPAWN_LOCK = threading.Lock()
 
 
 class WorkerError(RuntimeError):
@@ -229,15 +230,59 @@ def _cleanup_request_staging(payload: dict[str, Any], request_id: str) -> None:
                 shutil.rmtree(candidate, ignore_errors=True)
 
 
-def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
-    """Spawn without mutating the GUI process' DLL loader state.
+def _windows_dll_directory() -> str | None:
+    """Return PyInstaller's current Windows DLL directory, if one is active."""
+    if sys.platform != "win32":
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_dll_directory = kernel32.GetDllDirectoryW
+        get_dll_directory.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_wchar)]
+        get_dll_directory.restype = ctypes.c_uint
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_dll_directory(len(buffer), buffer)
+        if 0 < length < len(buffer):
+            return buffer.value
+    except (AttributeError, OSError):
+        pass
+    # Onedir PyInstaller applications keep their DLL directory at _MEIPASS.
+    # This also gives us a safe restoration target if GetDllDirectoryW is absent.
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    return str(bundle_root) if bundle_root else None
 
-    The worker's separate executable, private onedir runtime, clean environment,
-    working directory, and own runtime hook define its dependency boundary.
-    Changing ``SetDllDirectoryW`` in the wx process is unsafe: it changes the
-    child bootstrap path and can stall MediaPipe before Python imports it.
+
+def _set_windows_dll_directory(directory: str | None) -> bool:
+    """Set the process DLL directory, returning false only when unavailable."""
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        set_dll_directory = kernel32.SetDllDirectoryW
+        set_dll_directory.argtypes = [ctypes.c_wchar_p]
+        set_dll_directory.restype = ctypes.c_bool
+        return bool(set_dll_directory(directory))
+    except (AttributeError, OSError):
+        return False
+
+
+def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
+    """Spawn the worker after clearing PyInstaller's inherited DLL directory.
+
+    PyInstaller's Windows bootloader uses ``SetDllDirectoryW`` for its own
+    bundled dependencies. Windows applies that setting while a child process is
+    created, so the GUI must temporarily clear it before launching the static
+    worker trampoline. The GUI's loader state is restored immediately after
+    ``Popen`` returns; no GUI PATH or persistent DLL configuration is changed.
     """
-    return subprocess.Popen(command, **kwargs)
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return subprocess.Popen(command, **kwargs)
+
+    with _WINDOWS_WORKER_SPAWN_LOCK:
+        original_directory = _windows_dll_directory()
+        if not _set_windows_dll_directory(None):
+            raise WorkerError("Unable to isolate the Windows worker DLL search path")
+        try:
+            return subprocess.Popen(command, **kwargs)
+        finally:
+            _set_windows_dll_directory(original_directory)
 
 
 class NativeWorkerClient:

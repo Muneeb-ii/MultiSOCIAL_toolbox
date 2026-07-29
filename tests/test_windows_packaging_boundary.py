@@ -447,6 +447,7 @@ def test_speechbrain_runtime_discovery_matches_checked_in_complete_manifest():
         "speechbrain.lobes.models.ECAPA_TDNN",
         "speechbrain.processing.features",
         "speechbrain.pretrained.interfaces",
+        "transformers.integrations.ggml",
     } <= set(manifest.COMPLETE_HIDDEN_IMPORTS)
 
 

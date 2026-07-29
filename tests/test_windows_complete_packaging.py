@@ -122,7 +122,9 @@ def test_windows_dynamic_manifests_do_not_discover_transformers_or_diarization_r
     assert "TORCH_RUNTIME_HIDDEN_IMPORTS" in manifest
     assert "TORCHAUDIO_RUNTIME_HIDDEN_IMPORTS" in manifest
     assert "transformers.models.whisper.modeling_whisper" in manifest
+    assert "transformers.integrations.ggml" in manifest
     assert "pyannote.audio.pipelines.speaker_diarization" in manifest
+    assert "transformers.integrations.ggml" not in transformer_hook
     assert "transformers.quantizers" in transformer_hook
 
 

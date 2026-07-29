@@ -9,6 +9,7 @@ excludedimports = [
     "flax",
     "jax",
     "keras",
-    "transformers.integrations",
+    "transformers.integrations.awq",
+    "transformers.integrations.bitsandbytes",
     "transformers.quantizers",
 ]
