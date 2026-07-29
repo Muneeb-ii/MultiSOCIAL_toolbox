@@ -43,6 +43,8 @@ def test_windows_release_builds_install_only_from_committed_lock():
     gui_lock = (REPO_ROOT / "requirements" / "locks" / "windows-gui-py310.txt").read_text(encoding="utf-8")
 
     assert "Create physically separate GUI and worker environments" in workflow
+    assert "Build static native worker launcher" in workflow
+    assert "packaging/build_windows_worker_launcher.py" in workflow
     assert "pip install --require-hashes --no-deps" in workflow
     assert "windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt" in workflow
     assert "windows-gui-py310.txt" in workflow
@@ -65,10 +67,10 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny" in workflow
     assert "needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e" in workflow
     assert "windows_packaged_e2e.py" in workflow
-    assert "Diagnose direct packaged worker probe" in workflow
+    assert "Diagnose direct native launcher-to-worker probe" in workflow
     assert "Diagnose packaged GUI-to-worker probe" in workflow
-    assert "Diagnose relocated direct packaged worker probe" in workflow
-    assert "--worker \"dist/${app_name}/worker/MultiSOCIAL-Worker.exe\"" in workflow
+    assert "Diagnose relocated native launcher-to-worker probe" in workflow
+    assert "--worker \"dist/${app_name}/worker/MultiSOCIAL-Worker-Launcher.exe\"" in workflow
     assert "--timeout 60" in workflow
     assert "Expand-Archive" in workflow
     assert "path: release-artifacts/*-windows.zip" in workflow

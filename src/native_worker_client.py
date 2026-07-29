@@ -24,6 +24,8 @@ from typing import Any, Callable, Optional
 PROTOCOL_VERSION = 1
 WORKER_TOKEN_ENV = "MULTISOCIAL_WORKER_HF_TOKEN"
 WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
+WORKER_EXECUTABLE_NAME = "MultiSOCIAL-Worker.exe"
+WORKER_LAUNCHER_NAME = "MultiSOCIAL-Worker-Launcher.exe"
 
 
 class WorkerError(RuntimeError):
@@ -80,9 +82,9 @@ def _worker_diagnostic_path(request_id: str) -> Path:
 def worker_command() -> list[str]:
     """Locate the bundled console worker, or run it from source for tests."""
     if getattr(sys, "frozen", False):
-        candidate = Path(sys.executable).parent / "worker" / "MultiSOCIAL-Worker.exe"
+        candidate = Path(sys.executable).parent / "worker" / WORKER_LAUNCHER_NAME
         if not candidate.is_file():
-            raise WorkerError(f"Bundled analysis worker is missing: {candidate.name}")
+            raise WorkerError(f"Bundled analysis worker launcher is missing: {candidate.name}")
         return [str(candidate)]
     return [sys.executable, str(Path(__file__).with_name("analysis_worker.py"))]
 
@@ -112,7 +114,10 @@ def _path_is_within(path: str | Path, root: str | Path) -> bool:
 
 def _worker_directory(command: list[str]) -> Path:
     executable = Path(command[0]).resolve()
-    if executable.name.casefold() == "multiSOCIAL-worker.exe".casefold():
+    if executable.name.casefold() in {
+        WORKER_EXECUTABLE_NAME.casefold(),
+        WORKER_LAUNCHER_NAME.casefold(),
+    }:
         return executable.parent
     if len(command) > 1:
         return Path(command[1]).resolve().parent

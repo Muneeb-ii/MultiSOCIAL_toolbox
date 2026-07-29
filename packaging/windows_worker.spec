@@ -66,7 +66,7 @@ for package in (
     "ultralytics",
     "yolov5",
 ):
-    datas += copy_metadata(package)
+    datas += copy_metadata(package, recursive=package == "transformers")
 
 binaries = []
 for package in ("audinterface", "audresample", "mediapipe", "opensmile", "soundfile"):
@@ -89,7 +89,6 @@ if profile == "complete":
         "pyannote.audio",
         "pyannote.core",
         "pytorch_lightning",
-        "regex",
         "speechbrain",
         "torchaudio",
         "torchmetrics",

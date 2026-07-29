@@ -154,11 +154,14 @@ def test_opaque_assembly_keeps_worker_runtime_under_worker_directory(tmp_path):
     (gui / "python310.dll").write_bytes(b"gui-python")
     (worker / "MultiSOCIAL-Worker.exe").write_bytes(b"worker")
     (worker / "python310.dll").write_bytes(b"worker-python")
+    launcher = tmp_path / "MultiSOCIAL-Worker-Launcher.exe"
+    launcher.write_bytes(b"launcher")
 
-    assembler.assemble(gui, worker, output)
+    assembler.assemble(gui, worker, launcher, output)
 
     assert (output / "MultiSOCIAL-Standard.exe").read_bytes() == b"gui"
     assert (output / "worker" / "MultiSOCIAL-Worker.exe").read_bytes() == b"worker"
+    assert (output / "worker" / "MultiSOCIAL-Worker-Launcher.exe").read_bytes() == b"launcher"
     assert (output / "python310.dll").read_bytes() != (output / "worker" / "python310.dll").read_bytes()
 
 def test_assembly_rejects_output_that_can_delete_an_input(tmp_path):
@@ -169,7 +172,7 @@ def test_assembly_rejects_output_that_can_delete_an_input(tmp_path):
     worker.mkdir()
 
     with pytest.raises(ValueError, match="must not contain"):
-        assembler.assemble(gui, worker, tmp_path)
+        assembler.assemble(gui, worker, tmp_path / "launcher.exe", tmp_path)
 
 def test_runtime_root_rejects_nested_python_dll(tmp_path, monkeypatch):
     validator = _load_packaging_module("validate_windows_bundle")
@@ -323,6 +326,7 @@ def test_full_standard_bundle_validation_accepts_two_isolated_runtime_sets(
         validator.VC_RUNTIME_NAMES,
         stable_abi=True,
     )
+    (worker / "MultiSOCIAL-Worker-Launcher.exe").touch()
     required_worker_files = [
         worker / "audresample/core/bin/win_amd64/audresample.dll",
         worker / "opensmile/core/bin/win_amd64/SMILEapi.dll",

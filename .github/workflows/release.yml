@@ -156,6 +156,8 @@ jobs:
             packaging/windows_hooks/hook-transformers.py \
             packaging/windows_hooks/hook-ultralytics.py \
             packaging/windows_hooks/hook-yolov5.py \
+            packaging/windows_worker_launcher.c \
+            packaging/build_windows_worker_launcher.py \
             .github/scripts/run_windows_packaged_request.py \
             .github/scripts/windows_packaged_e2e.py
           test -f packaging/windows_gui.spec
@@ -180,6 +182,13 @@ jobs:
             --kind gui --lock requirements/locks/windows-gui-py310.txt
           .venv-worker/Scripts/python.exe packaging/audit_windows_environment.py \
             --kind worker --lock "requirements/locks/windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt"
+
+      - name: Build static native worker launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          python packaging/build_windows_worker_launcher.py \
+            --output ".tmp/worker-launcher-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/MultiSOCIAL-Worker-Launcher.exe"
 
       - name: Build native-free Windows GUI
         shell: bash
@@ -220,12 +229,13 @@ jobs:
           python packaging/assemble_windows.py \
             --gui ".tmp/gui-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/${app_name}" \
             --worker ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/MultiSOCIAL-Worker" \
+            --launcher ".tmp/worker-launcher-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/MultiSOCIAL-Worker-Launcher.exe" \
             --output "dist/${app_name}"
           python packaging/validate_windows_bundle.py --root "dist/${app_name}" \
             --profile "${MULTISOCIAL_BUILD_PROFILE}"
           python .github/scripts/validate_complete_bundle_layout.py
 
-      - name: Diagnose direct packaged worker probe
+      - name: Diagnose direct native launcher-to-worker probe
         shell: bash
         run: |
           set -euo pipefail
@@ -235,7 +245,7 @@ jobs:
           mkdir -p "${workspace}"
           printf '{"operation":"probe","payload":{"profile":"%s"}}\n' "${MULTISOCIAL_BUILD_PROFILE}" > "${workspace}/request.json"
           python .github/scripts/run_windows_packaged_request.py \
-            --worker "dist/${app_name}/worker/MultiSOCIAL-Worker.exe" \
+            --worker "dist/${app_name}/worker/MultiSOCIAL-Worker-Launcher.exe" \
             --request "${workspace}/request.json" \
             --result "${workspace}/result.json" \
             --timeout 60
@@ -333,13 +343,13 @@ jobs:
           Expand-Archive -LiteralPath $archive.FullName -DestinationPath $installRoot
           "INSTALL_ROOT=$installRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Diagnose relocated direct packaged worker probe
+      - name: Diagnose relocated native launcher-to-worker probe
         shell: bash
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
           [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
-          worker="$(find "${INSTALL_ROOT}" -path "*/worker/MultiSOCIAL-Worker.exe" -type f -print -quit)"
+          worker="$(find "${INSTALL_ROOT}" -path "*/worker/MultiSOCIAL-Worker-Launcher.exe" -type f -print -quit)"
           test -n "${worker}"
           workspace=".tmp/compat-worker-diagnostic-${MULTISOCIAL_BUILD_PROFILE}"
           mkdir -p "${workspace}"

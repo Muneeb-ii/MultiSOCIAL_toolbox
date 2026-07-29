@@ -145,7 +145,7 @@ def test_frozen_windows_worker_uses_its_private_runtime_directory(tmp_path, monk
     import native_worker_client
 
     executable = tmp_path / "MultiSOCIAL-Standard.exe"
-    worker = tmp_path / "worker" / "MultiSOCIAL-Worker.exe"
+    worker = tmp_path / "worker" / "MultiSOCIAL-Worker-Launcher.exe"
     worker.parent.mkdir()
     executable.touch()
     worker.touch()
@@ -159,7 +159,7 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     import native_worker_client
 
     gui = tmp_path / "app" / "MultiSOCIAL-Standard.exe"
-    worker = gui.parent / "worker" / "MultiSOCIAL-Worker.exe"
+    worker = gui.parent / "worker" / "MultiSOCIAL-Worker-Launcher.exe"
     worker.parent.mkdir(parents=True)
     gui.touch()
     worker.touch()

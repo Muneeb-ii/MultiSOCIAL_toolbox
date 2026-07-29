@@ -25,26 +25,29 @@ def _copy_contents(source: Path, destination: Path) -> None:
             shutil.copy2(item, target)
 
 
-def assemble(gui: Path, worker: Path, output: Path) -> None:
+def assemble(gui: Path, worker: Path, launcher: Path, output: Path) -> None:
     gui = gui.resolve()
     worker = worker.resolve()
+    launcher = launcher.resolve()
     output = output.resolve()
     _assert_safe_output(gui, worker, output)
-    if not gui.is_dir() or not worker.is_dir():
-        raise FileNotFoundError("Both independent PyInstaller onedir outputs are required")
+    if not gui.is_dir() or not worker.is_dir() or not launcher.is_file():
+        raise FileNotFoundError("GUI, worker, and native launcher outputs are required")
     if output.exists():
         shutil.rmtree(output)
     shutil.copytree(gui, output)
     _copy_contents(worker, output / "worker")
+    shutil.copy2(launcher, output / "worker" / "MultiSOCIAL-Worker-Launcher.exe")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--gui", type=Path, required=True)
     parser.add_argument("--worker", type=Path, required=True)
+    parser.add_argument("--launcher", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    assemble(args.gui.resolve(), args.worker.resolve(), args.output.resolve())
+    assemble(args.gui.resolve(), args.worker.resolve(), args.launcher.resolve(), args.output.resolve())
 
 
 if __name__ == "__main__":

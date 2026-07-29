@@ -126,12 +126,22 @@ def test_windows_dynamic_manifests_do_not_discover_transformers_or_diarization_r
     assert "transformers.quantizers" in transformer_hook
 
 
-def test_complete_worker_includes_transformers_regex_distribution_metadata():
+def test_worker_collects_transformers_dependency_metadata_recursively():
     worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
 
-    complete_section = worker_spec.split('if profile == "complete":', 1)[1]
-    metadata_section = complete_section.split("datas += copy_metadata(package)", 1)[0]
-    assert '"regex",' in metadata_section
+    assert 'copy_metadata(package, recursive=package == "transformers")' in worker_spec
+
+
+def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
+    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
+    launcher_source = (ROOT / "packaging" / "windows_worker_launcher.c").read_text(encoding="utf-8")
+
+    assert 'copy_metadata(package, recursive=package == "transformers")' in worker_spec
+    assert "SetDllDirectoryW(NULL)" in launcher_source
+    assert "CreateProcessW" in launcher_source
+    assert "/MT" in (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
+    complete_layout = (ROOT / ".github" / "scripts" / "validate_complete_bundle_layout.py").read_text(encoding="utf-8")
+    assert 'for distribution in ("regex", "requests")' in complete_layout
 
 
 def test_worker_initializes_native_modules_before_starting_the_operation_thread():

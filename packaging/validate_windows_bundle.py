@@ -116,6 +116,9 @@ def validate(root: Path, profile: str) -> None:
     worker = root / "worker"
     _assert_runtime_root(root, f"{app_name}.exe", excluded=worker)
     _assert_runtime_root(worker, "MultiSOCIAL-Worker.exe")
+    launcher = worker / "MultiSOCIAL-Worker-Launcher.exe"
+    if not launcher.is_file() or _pe_machine(launcher) != PE_MACHINE_AMD64:
+        raise RuntimeError("Worker native launcher is missing or is not AMD64")
 
     forbidden_gui_parts = {
         "audio.py",
