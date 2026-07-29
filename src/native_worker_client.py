@@ -27,6 +27,8 @@ WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
 WORKER_EXECUTABLE_NAME = "MultiSOCIAL-Worker.exe"
 WORKER_LAUNCHER_NAME = "MultiSOCIAL-Worker-Launcher.exe"
 _WINDOWS_WORKER_SPAWN_LOCK = threading.Lock()
+_WINDOWS_WORKER_DLL_LEASES = 0
+_WINDOWS_WORKER_ORIGINAL_DLL_DIRECTORY: str | None = None
 _PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES = (
     "_PYI_APPLICATION_HOME_DIR",
     "_PYI_ARCHIVE_FILE",
@@ -275,26 +277,53 @@ def _set_windows_dll_directory(directory: str | None) -> bool:
         return False
 
 
-def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
+def _acquire_windows_worker_dll_lease() -> Callable[[], None]:
+    """Keep the GUI DLL directory clear until every active worker has exited."""
+    global _WINDOWS_WORKER_DLL_LEASES, _WINDOWS_WORKER_ORIGINAL_DLL_DIRECTORY
+
+    with _WINDOWS_WORKER_SPAWN_LOCK:
+        if _WINDOWS_WORKER_DLL_LEASES == 0:
+            _WINDOWS_WORKER_ORIGINAL_DLL_DIRECTORY = _windows_dll_directory()
+            if not _set_windows_dll_directory(None):
+                raise WorkerError("Unable to isolate the Windows worker DLL search path")
+        _WINDOWS_WORKER_DLL_LEASES += 1
+
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        global _WINDOWS_WORKER_DLL_LEASES, _WINDOWS_WORKER_ORIGINAL_DLL_DIRECTORY
+        with _WINDOWS_WORKER_SPAWN_LOCK:
+            if released:
+                return
+            released = True
+            _WINDOWS_WORKER_DLL_LEASES -= 1
+            if _WINDOWS_WORKER_DLL_LEASES == 0:
+                _set_windows_dll_directory(_WINDOWS_WORKER_ORIGINAL_DLL_DIRECTORY)
+                _WINDOWS_WORKER_ORIGINAL_DLL_DIRECTORY = None
+
+    return release
+
+
+def _spawn_worker(command: list[str], **kwargs: Any) -> tuple[subprocess.Popen, Callable[[], None]]:
     """Spawn the worker after clearing PyInstaller's inherited DLL directory.
 
     PyInstaller's Windows bootloader uses ``SetDllDirectoryW`` for its own
     bundled dependencies. Windows applies that setting while a child process is
     created, so the GUI must temporarily clear it before launching the static
     worker trampoline. The GUI's loader state is restored immediately after
-    ``Popen`` returns; no GUI PATH or persistent DLL configuration is changed.
+    The original GUI setting is restored once the worker exits; no GUI PATH is
+    changed, and concurrent worker launches share one correctly scoped lease.
     """
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
-        return subprocess.Popen(command, **kwargs)
+        return subprocess.Popen(command, **kwargs), lambda: None
 
-    with _WINDOWS_WORKER_SPAWN_LOCK:
-        original_directory = _windows_dll_directory()
-        if not _set_windows_dll_directory(None):
-            raise WorkerError("Unable to isolate the Windows worker DLL search path")
-        try:
-            return subprocess.Popen(command, **kwargs)
-        finally:
-            _set_windows_dll_directory(original_directory)
+    release = _acquire_windows_worker_dll_lease()
+    try:
+        return subprocess.Popen(command, **kwargs), release
+    except Exception:
+        release()
+        raise
 
 
 class NativeWorkerClient:
@@ -334,7 +363,7 @@ class NativeWorkerClient:
         env[WORKER_DIAGNOSTIC_ENV] = str(diagnostic_path)
         worker_dir = _worker_directory(self.command)
 
-        process = _spawn_worker(
+        process, release_worker_dll_lease = _spawn_worker(
             self.command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -448,6 +477,7 @@ class NativeWorkerClient:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     process.kill()
+            release_worker_dll_lease()
             _cleanup_request_staging(payload, request_id)
             if completed_successfully:
                 diagnostic_path.unlink(missing_ok=True)
