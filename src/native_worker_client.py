@@ -24,7 +24,6 @@ from typing import Any, Callable, Optional
 PROTOCOL_VERSION = 1
 WORKER_TOKEN_ENV = "MULTISOCIAL_WORKER_HF_TOKEN"
 WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
-_WINDOWS_LAUNCH_LOCK = threading.Lock()
 
 
 class WorkerError(RuntimeError):
@@ -221,32 +220,14 @@ def _cleanup_request_staging(payload: dict[str, Any], request_id: str) -> None:
 
 
 def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
-    """Spawn a packaged worker with its own DLL directory, never the GUI's."""
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
-        return subprocess.Popen(command, **kwargs)
+    """Spawn without mutating the GUI process' DLL loader state.
 
-    gui_bundle_root = str(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)).resolve())
-    worker_bundle_root = str(_worker_directory(command).resolve())
-    kernel32 = ctypes.windll.kernel32
-    set_dll_directory = kernel32.SetDllDirectoryW
-    try:
-        set_dll_directory.argtypes = [ctypes.c_wchar_p]
-        set_dll_directory.restype = ctypes.c_int
-    except AttributeError:
-        # Unit-test fakes are ordinary bound Python methods.
-        pass
-    with _WINDOWS_LAUNCH_LOCK:
-        if not set_dll_directory(worker_bundle_root):
-            raise WorkerError("Could not select the private worker DLL directory before starting the worker")
-        process = None
-        try:
-            process = subprocess.Popen(command, **kwargs)
-        finally:
-            if not set_dll_directory(gui_bundle_root):
-                if process is not None:
-                    process.terminate()
-                raise WorkerError("Could not restore the GUI DLL search directory after starting the worker")
-        return process
+    The worker's separate executable, private onedir runtime, clean environment,
+    working directory, and own runtime hook define its dependency boundary.
+    Changing ``SetDllDirectoryW`` in the wx process is unsafe: it changes the
+    child bootstrap path and can stall MediaPipe before Python imports it.
+    """
+    return subprocess.Popen(command, **kwargs)
 
 
 class NativeWorkerClient:
@@ -276,7 +257,12 @@ class NativeWorkerClient:
         request_id = str(uuid.uuid4())
         payload = _absolutize_worker_payload(payload)
         env = _packaged_windows_environment(self.command, hf_token)
-        diagnostic_path = _worker_diagnostic_path(request_id)
+        inherited_diagnostic = env.get(WORKER_DIAGNOSTIC_ENV)
+        diagnostic_path = (
+            Path(inherited_diagnostic)
+            if inherited_diagnostic
+            else _worker_diagnostic_path(request_id)
+        )
         diagnostic_path.unlink(missing_ok=True)
         env[WORKER_DIAGNOSTIC_ENV] = str(diagnostic_path)
         worker_dir = _worker_directory(self.command)

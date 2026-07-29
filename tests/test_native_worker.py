@@ -198,35 +198,36 @@ def test_worker_payload_paths_are_absolute_before_worker_cwd_changes(tmp_path, m
     ]]
 
 
-def test_packaged_windows_spawn_selects_worker_and_restores_gui_dll_directory(tmp_path, monkeypatch):
+def test_packaged_windows_spawn_does_not_mutate_gui_dll_directory(monkeypatch):
     import native_worker_client
 
-    calls = []
     sentinel = object()
-
-    class Kernel32:
-        def SetDllDirectoryW(self, value):
-            calls.append(value)
-            return 1
-
-    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
-    monkeypatch.setattr(native_worker_client.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(native_worker_client.sys, "_MEIPASS", str(tmp_path / "gui"), raising=False)
-    monkeypatch.setattr(
-        native_worker_client.ctypes,
-        "windll",
-        type("Windll", (), {"kernel32": Kernel32()})(),
-        raising=False,
-    )
     monkeypatch.setattr(native_worker_client.subprocess, "Popen", lambda *args, **kwargs: sentinel)
 
-    worker = tmp_path / "app" / "worker" / "MultiSOCIAL-Worker.exe"
-    worker.parent.mkdir(parents=True)
-    worker.touch()
-    result = native_worker_client._spawn_worker([str(worker)])
+    result = native_worker_client._spawn_worker(["MultiSOCIAL-Worker.exe"])
 
     assert result is sentinel
-    assert calls == [str(worker.parent.resolve()), str((tmp_path / "gui").resolve())]
+
+
+def test_worker_client_preserves_a_caller_supplied_diagnostic_path(tmp_path, monkeypatch):
+    import native_worker_client
+    from native_worker_client import NativeWorkerClient
+
+    diagnostic = tmp_path / "caller-diagnostic.jsonl"
+    command = _worker_script(
+        tmp_path,
+        """import json, os, sys
+request = json.loads(sys.stdin.readline())
+with open(os.environ["MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"], "w", encoding="utf-8") as output:
+    output.write('{"stage":"result-emitted"}\\n')
+print(json.dumps({"protocol": 1, "id": request["id"], "event": "result", "result": {}}), flush=True)
+""",
+    )
+    monkeypatch.setenv(native_worker_client.WORKER_DIAGNOSTIC_ENV, str(diagnostic))
+
+    NativeWorkerClient(command=command).run("probe", {})
+
+    assert not diagnostic.exists()
 
 
 def test_worker_probe_metadata_reports_the_current_architecture():

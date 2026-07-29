@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 import uuid
@@ -98,6 +99,18 @@ def _write_result(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
 
+def _safe_protocol_error(event: dict | None) -> str:
+    """Return a bounded worker error without secrets or absolute user paths."""
+    if not event:
+        return "no protocol error returned"
+    message = str(event.get("message") or type(event).__name__)
+    token = os.environ.get("MULTISOCIAL_WORKER_HF_TOKEN")
+    if token:
+        message = message.replace(token, "[REDACTED]")
+    message = re.sub(r"[A-Za-z]:[\\/][^\s'\"]+", "[REDACTED_PATH]", message)
+    return message.replace("\r", " ").replace("\n", " ")[-500:]
+
+
 def run_worker_request(
     worker: Path,
     request: Path,
@@ -151,7 +164,8 @@ def run_worker_request(
     if process.returncode != 0 or not response or response.get("event") != "result":
         raise RuntimeError(
             f"Packaged direct worker probe failed (exit {process.returncode}) "
-            f"at stages: {_diagnostic_stages(diagnostic_path)}"
+            f"at stages: {_diagnostic_stages(diagnostic_path)}: "
+            f"{_safe_protocol_error(response)}"
         )
     output = {"ok": True, "result": dict(response.get("result") or {})}
     _write_result(result, output)
