@@ -18,6 +18,24 @@
 #define LAUNCHER_NAME L"MultiSOCIAL-Worker-Launcher.exe"
 #define WORKER_NAME L"MultiSOCIAL-Worker.exe"
 
+static void reset_pyinstaller_environment(void) {
+    const WCHAR *const names[] = {
+        L"PYINSTALLER_RESET_ENVIRONMENT",
+        L"_PYI_APPLICATION_HOME_DIR",
+        L"_PYI_ARCHIVE_FILE",
+        L"_PYI_PARENT_PROCESS_LEVEL",
+        L"_PYI_SPLASH_IPC",
+        L"_MEIPASS2",
+    };
+    size_t index;
+
+    /* The GUI parent is a separate PyInstaller application.  This static
+       launcher must not pass its private bootloader state to the worker. */
+    for (index = 0; index < ARRAYSIZE(names); ++index) {
+        SetEnvironmentVariableW(names[index], NULL);
+    }
+}
+
 static int fail(DWORD error) {
     WCHAR message[128];
     StringCchPrintfW(message, ARRAYSIZE(message), L"Worker launcher failed (%lu)\n", error);
@@ -52,6 +70,7 @@ int wmain(void) {
     /* Reset both legacy and modern process DLL-directory mechanisms. */
     SetDllDirectoryW(NULL);
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    reset_pyinstaller_environment();
     if (!SetCurrentDirectoryW(launcher_path)) {
         return fail(GetLastError());
     }

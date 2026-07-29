@@ -140,6 +140,9 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
 
     assert 'copy_metadata(package, recursive=package == "transformers")' in worker_spec
     assert "SetDllDirectoryW(NULL)" in launcher_source
+    assert "reset_pyinstaller_environment();" in launcher_source
+    assert "_PYI_ARCHIVE_FILE" in launcher_source
+    assert "_PYI_PARENT_PROCESS_LEVEL" in launcher_source
     assert "CreateProcessW" in launcher_source
     launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
     assert "/MT" in launcher_builder

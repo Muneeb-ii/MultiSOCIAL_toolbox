@@ -27,6 +27,13 @@ WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
 WORKER_EXECUTABLE_NAME = "MultiSOCIAL-Worker.exe"
 WORKER_LAUNCHER_NAME = "MultiSOCIAL-Worker-Launcher.exe"
 _WINDOWS_WORKER_SPAWN_LOCK = threading.Lock()
+_PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES = (
+    "_PYI_APPLICATION_HOME_DIR",
+    "_PYI_ARCHIVE_FILE",
+    "_PYI_PARENT_PROCESS_LEVEL",
+    "_PYI_SPLASH_IPC",
+    "_MEIPASS2",
+)
 
 
 class WorkerError(RuntimeError):
@@ -156,6 +163,11 @@ def _packaged_windows_environment(command: list[str], token: Optional[str]) -> d
     app_root = Path(sys.executable).resolve().parent
     worker_dir = _worker_directory(command)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    # The launcher is not itself a PyInstaller executable. Remove the GUI
+    # bootloader's private state before it starts the worker so the worker's
+    # bootloader cannot mistake itself for a GUI subprocess.
+    for name in _PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES:
+        env.pop(name, None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
 

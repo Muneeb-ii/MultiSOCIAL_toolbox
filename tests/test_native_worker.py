@@ -171,6 +171,8 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     monkeypatch.setenv("PYTHONHOME", "bad")
     monkeypatch.setenv("PYTHONPATH", "bad")
     monkeypatch.setenv("MULTISOCIAL_FFMPEG_EXE", str(gui.parent / "ffmpeg.exe"))
+    for name in native_worker_client._PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES:
+        monkeypatch.setenv(name, "gui-private-state")
 
     env = native_worker_client._packaged_windows_environment([str(worker)], None)
 
@@ -187,6 +189,8 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     assert "PYTHONHOME" not in env
     assert "PYTHONPATH" not in env
     assert "MULTISOCIAL_FFMPEG_EXE" not in env
+    for name in native_worker_client._PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES:
+        assert name not in env
 
 def test_worker_payload_paths_are_absolute_before_worker_cwd_changes(tmp_path, monkeypatch):
     import native_worker_client
