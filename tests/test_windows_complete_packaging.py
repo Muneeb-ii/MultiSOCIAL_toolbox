@@ -144,6 +144,8 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "def _write_build_batch(output: Path)" in launcher_builder
     assert 'subprocess.run([str(batch_file)], check=True)' in launcher_builder
     assert 'call "{vcvars}" >nul' in launcher_builder
+    assert "/DUNICODE" not in launcher_builder
+    assert "/D_UNICODE" not in launcher_builder
     complete_layout = (ROOT / ".github" / "scripts" / "validate_complete_bundle_layout.py").read_text(encoding="utf-8")
     assert 'for distribution in ("regex", "requests")' in complete_layout
 

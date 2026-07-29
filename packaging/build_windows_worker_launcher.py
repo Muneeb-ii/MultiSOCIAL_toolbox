@@ -46,7 +46,7 @@ def _write_build_batch(output: Path) -> Path:
         f'call "{vcvars}" >nul\r\n'
         "if errorlevel 1 exit /b %errorlevel%\r\n"
         # /MT avoids any client-side Visual C++ redistributable dependency.
-        f'cl /nologo /std:c11 /O2 /W4 /WX /MT /DUNICODE /D_UNICODE '
+        f'cl /nologo /std:c11 /O2 /W4 /WX /MT '
         f'/Fe"{output}" "{SOURCE}" /link /SUBSYSTEM:CONSOLE\r\n',
         encoding="utf-8",
         newline="",
