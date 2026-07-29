@@ -139,7 +139,9 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert 'copy_metadata(package, recursive=package == "transformers")' in worker_spec
     assert "SetDllDirectoryW(NULL)" in launcher_source
     assert "CreateProcessW" in launcher_source
-    assert "/MT" in (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
+    launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
+    assert "/MT" in launcher_builder
+    assert '["cmd.exe", "/d", "/c", _developer_command(output)]' in launcher_builder
     complete_layout = (ROOT / ".github" / "scripts" / "validate_complete_bundle_layout.py").read_text(encoding="utf-8")
     assert 'for distribution in ("regex", "requests")' in complete_layout
 

@@ -47,7 +47,10 @@ def build(output: Path) -> None:
         raise RuntimeError("The native worker launcher can only be built on Windows")
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cmd.exe", "/d", "/s", "/c", _developer_command(output)], check=True)
+    # Do not use cmd.exe's /s mode here: it treats the quoted Visual Studio
+    # batch-file path as a literal command when the installation is under
+    # Program Files.
+    subprocess.run(["cmd.exe", "/d", "/c", _developer_command(output)], check=True)
     if not output.is_file():
         raise RuntimeError("Native worker launcher build did not produce an executable")
 
