@@ -91,8 +91,13 @@ def _worker_popen_kwargs() -> dict[str, Any]:
     """Keep the private console worker invisible when launched by the GUI."""
     if sys.platform != "win32":
         return {}
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return {"creationflags": creationflags} if creationflags else {}
+    startup_info_factory = getattr(subprocess, "STARTUPINFO", None)
+    if startup_info_factory is None:
+        return {}
+    startup_info = startup_info_factory()
+    startup_info.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    startup_info.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return {"startupinfo": startup_info}
 
 
 def _path_is_within(path: str | Path, root: str | Path) -> bool:

@@ -124,10 +124,21 @@ time.sleep(30)
 def test_windows_worker_launch_does_not_show_a_console(monkeypatch):
     import native_worker_client
 
-    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
-    monkeypatch.setattr(native_worker_client.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    class StartupInfo:
+        def __init__(self):
+            self.dwFlags = 0
+            self.wShowWindow = None
 
-    assert native_worker_client._worker_popen_kwargs() == {"creationflags": 0x08000000}
+    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
+    monkeypatch.setattr(native_worker_client.subprocess, "STARTUPINFO", StartupInfo, raising=False)
+    monkeypatch.setattr(native_worker_client.subprocess, "STARTF_USESHOWWINDOW", 1, raising=False)
+    monkeypatch.setattr(native_worker_client.subprocess, "SW_HIDE", 0, raising=False)
+
+    kwargs = native_worker_client._worker_popen_kwargs()
+
+    assert set(kwargs) == {"startupinfo"}
+    assert kwargs["startupinfo"].dwFlags == 1
+    assert kwargs["startupinfo"].wShowWindow == 0
 
 
 def test_frozen_windows_worker_uses_its_private_runtime_directory(tmp_path, monkeypatch):

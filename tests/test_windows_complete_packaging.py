@@ -126,6 +126,14 @@ def test_windows_dynamic_manifests_do_not_discover_transformers_or_diarization_r
     assert "transformers.quantizers" in transformer_hook
 
 
+def test_complete_worker_includes_transformers_regex_distribution_metadata():
+    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
+
+    complete_section = worker_spec.split('if profile == "complete":', 1)[1]
+    metadata_section = complete_section.split("datas += copy_metadata(package)", 1)[0]
+    assert '"regex",' in metadata_section
+
+
 def test_worker_initializes_native_modules_before_starting_the_operation_thread():
     worker_source = (ROOT / "src" / "analysis_worker.py").read_text(encoding="utf-8")
 

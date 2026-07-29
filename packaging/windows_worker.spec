@@ -89,6 +89,7 @@ if profile == "complete":
         "pyannote.audio",
         "pyannote.core",
         "pytorch_lightning",
+        "regex",
         "speechbrain",
         "torchaudio",
         "torchmetrics",
