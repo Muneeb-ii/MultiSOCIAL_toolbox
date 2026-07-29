@@ -141,7 +141,9 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "CreateProcessW" in launcher_source
     launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
     assert "/MT" in launcher_builder
-    assert '["cmd.exe", "/d", "/c", _developer_command(output)]' in launcher_builder
+    assert "def _write_build_batch(output: Path)" in launcher_builder
+    assert 'subprocess.run([str(batch_file)], check=True)' in launcher_builder
+    assert 'call "{vcvars}" >nul' in launcher_builder
     complete_layout = (ROOT / ".github" / "scripts" / "validate_complete_bundle_layout.py").read_text(encoding="utf-8")
     assert 'for distribution in ("regex", "requests")' in complete_layout
 
