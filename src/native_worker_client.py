@@ -221,11 +221,12 @@ def _cleanup_request_staging(payload: dict[str, Any], request_id: str) -> None:
 
 
 def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
-    """Spawn a packaged worker without inheriting the GUI DLL search directory."""
+    """Spawn a packaged worker with its own DLL directory, never the GUI's."""
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return subprocess.Popen(command, **kwargs)
 
     gui_bundle_root = str(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)).resolve())
+    worker_bundle_root = str(_worker_directory(command).resolve())
     kernel32 = ctypes.windll.kernel32
     set_dll_directory = kernel32.SetDllDirectoryW
     try:
@@ -235,8 +236,8 @@ def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
         # Unit-test fakes are ordinary bound Python methods.
         pass
     with _WINDOWS_LAUNCH_LOCK:
-        if not set_dll_directory(None):
-            raise WorkerError("Could not clear the GUI DLL search directory before starting the worker")
+        if not set_dll_directory(worker_bundle_root):
+            raise WorkerError("Could not select the private worker DLL directory before starting the worker")
         process = None
         try:
             process = subprocess.Popen(command, **kwargs)

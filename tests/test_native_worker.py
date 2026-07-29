@@ -198,7 +198,7 @@ def test_worker_payload_paths_are_absolute_before_worker_cwd_changes(tmp_path, m
     ]]
 
 
-def test_packaged_windows_spawn_clears_and_restores_dll_directory(tmp_path, monkeypatch):
+def test_packaged_windows_spawn_selects_worker_and_restores_gui_dll_directory(tmp_path, monkeypatch):
     import native_worker_client
 
     calls = []
@@ -220,10 +220,13 @@ def test_packaged_windows_spawn_clears_and_restores_dll_directory(tmp_path, monk
     )
     monkeypatch.setattr(native_worker_client.subprocess, "Popen", lambda *args, **kwargs: sentinel)
 
-    result = native_worker_client._spawn_worker(["worker.exe"])
+    worker = tmp_path / "app" / "worker" / "MultiSOCIAL-Worker.exe"
+    worker.parent.mkdir(parents=True)
+    worker.touch()
+    result = native_worker_client._spawn_worker([str(worker)])
 
     assert result is sentinel
-    assert calls == [None, str((tmp_path / "gui").resolve())]
+    assert calls == [str(worker.parent.resolve()), str((tmp_path / "gui").resolve())]
 
 
 def test_worker_probe_metadata_reports_the_current_architecture():

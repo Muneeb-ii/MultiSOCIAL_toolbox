@@ -15,19 +15,20 @@ PROTOCOL_VERSION = 1
 DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
 
 
-def _diagnostic_stage(path: Path) -> str:
+def _diagnostic_stages(path: Path) -> str:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return "no worker stage recorded"
-    for line in reversed(lines):
+    stages: list[str] = []
+    for line in lines:
         try:
             stage = json.loads(line).get("stage")
         except (json.JSONDecodeError, AttributeError):
             continue
         if isinstance(stage, str) and stage:
-            return stage
-    return "no worker stage recorded"
+            stages.append(stage)
+    return " -> ".join(stages[-12:]) or "no worker stage recorded"
 
 
 def _terminate_tree(process: subprocess.Popen) -> None:
@@ -59,7 +60,7 @@ def _communicate_bounded(
         process.communicate()
         raise RuntimeError(
             f"Packaged worker diagnostic timed out after {timeout} seconds "
-            f"at stage: {_diagnostic_stage(diagnostic_path)}"
+            f"at stages: {_diagnostic_stages(diagnostic_path)}"
         ) from exc
     return stdout or "", stderr or ""
 
@@ -150,7 +151,7 @@ def run_worker_request(
     if process.returncode != 0 or not response or response.get("event") != "result":
         raise RuntimeError(
             f"Packaged direct worker probe failed (exit {process.returncode}) "
-            f"at stage: {_diagnostic_stage(diagnostic_path)}"
+            f"at stages: {_diagnostic_stages(diagnostic_path)}"
         )
     output = {"ok": True, "result": dict(response.get("result") or {})}
     _write_result(result, output)
@@ -201,13 +202,13 @@ def run_request(
     if not result.is_file():
         raise RuntimeError(
             f"Packaged GUI exited with {process.returncode} without a structured result "
-            f"at stage: {_diagnostic_stage(diagnostic_path)}"
+            f"at stages: {_diagnostic_stages(diagnostic_path)}"
         )
     response = json.loads(result.read_text(encoding="utf-8"))
     if process.returncode != 0 or not response.get("ok"):
         raise RuntimeError(
             f"Packaged GUI-to-worker request failed (exit {process.returncode}) "
-            f"at stage: {_diagnostic_stage(diagnostic_path)}: "
+            f"at stages: {_diagnostic_stages(diagnostic_path)}: "
             f"{response.get('error', response)!s}"
         )
     return response
