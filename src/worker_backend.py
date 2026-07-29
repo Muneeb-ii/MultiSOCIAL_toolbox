@@ -45,8 +45,14 @@ def _run_packaged_smoke_request() -> None:
         operation = str(request["operation"])
         payload = dict(request.get("payload") or {})
         cancel_after = request.get("cancel_after_seconds")
+        timeout_seconds = request.get("timeout_seconds")
         started = time.monotonic()
-        result = NativeWorkerClient().run(
+        client = (
+            NativeWorkerClient(timeout_seconds=float(timeout_seconds))
+            if timeout_seconds is not None
+            else NativeWorkerClient()
+        )
+        result = client.run(
             operation,
             payload,
             cancel_check=(

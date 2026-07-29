@@ -20,11 +20,49 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from native_worker_client import PROTOCOL_VERSION, WORKER_TOKEN_ENV, _windows_directory
+from native_worker_client import (
+    PROTOCOL_VERSION,
+    WORKER_DIAGNOSTIC_ENV,
+    WORKER_TOKEN_ENV,
+    _windows_directory,
+)
+
+
+_WORKER_STARTED_AT = time.monotonic()
+
+
+def _diagnostic_stage(stage: str, **details: str | int | bool | None) -> None:
+    """Persist a redacted, path-free startup breadcrumb for support and CI.
+
+    The parent selects the file location and receives only the last stage name;
+    this process never records input paths, environment values, model names, or
+    credentials.  Diagnostics intentionally cannot interfere with analysis.
+    """
+    destination = os.environ.get(WORKER_DIAGNOSTIC_ENV)
+    if not destination:
+        return
+    allowed_keys = {"platform", "architecture", "operation", "profile", "error_type"}
+    safe_details = {
+        key: value
+        for key, value in details.items()
+        if key in allowed_keys and (isinstance(value, (str, int, bool)) or value is None)
+    }
+    record = {
+        "stage": stage,
+        "elapsed_ms": int((time.monotonic() - _WORKER_STARTED_AT) * 1000),
+        **safe_details,
+    }
+    try:
+        with Path(destination).open("a", encoding="utf-8") as output:
+            output.write(json.dumps(record, separators=(",", ":")) + "\n")
+            output.flush()
+    except OSError:
+        pass
 
 
 class _RedactingStream(io.TextIOBase):
@@ -336,6 +374,11 @@ def _import_worker_runtime_module(module_name: str) -> Any:
     return importlib.import_module(module_name)
 
 
+def _preload_worker_runtime_module(module_name: str) -> Any:
+    _diagnostic_stage(f"preload:{module_name}")
+    return _import_worker_runtime_module(module_name)
+
+
 def _initialize_worker_operation_runtime(operation: str, payload: dict[str, Any]) -> None:
     """Initialize each native extension on the worker main thread.
 
@@ -344,27 +387,30 @@ def _initialize_worker_operation_runtime(operation: str, payload: dict[str, Any]
     their background thread.
     """
     if operation in {"extract_pose", "embed_pose"}:
-        _import_worker_runtime_module("mediapipe")
-        _import_worker_runtime_module("cv2")
+        _preload_worker_runtime_module("mediapipe")
+        _preload_worker_runtime_module("cv2")
+        _diagnostic_stage("tensor-loader-configured")
         _enable_worker_tensor_loader()
-        _import_worker_runtime_module("pose")
+        _preload_worker_runtime_module("pose")
         return
     if operation in {"extract_audio_features", "extract_transcripts", "align_features"}:
+        _diagnostic_stage("tensor-loader-configured")
         _enable_worker_tensor_loader()
-        _import_worker_runtime_module("audio")
+        _preload_worker_runtime_module("audio")
         if operation == "extract_transcripts" and payload.get("enable_diarization"):
-            _import_worker_runtime_module("torchaudio")
-            _import_worker_runtime_module("pyannote.audio")
+            _preload_worker_runtime_module("torchaudio")
+            _preload_worker_runtime_module("pyannote.audio")
         return
     if operation == "probe":
-        _import_worker_runtime_module("mediapipe")
-        _import_worker_runtime_module("cv2")
-        _import_worker_runtime_module("opensmile")
+        _preload_worker_runtime_module("mediapipe")
+        _preload_worker_runtime_module("cv2")
+        _preload_worker_runtime_module("opensmile")
+        _diagnostic_stage("tensor-loader-configured")
         _enable_worker_tensor_loader()
-        _import_worker_runtime_module("torch")
+        _preload_worker_runtime_module("torch")
         if payload.get("profile") == "complete":
-            _import_worker_runtime_module("torchaudio")
-            _import_worker_runtime_module("pyannote.audio")
+            _preload_worker_runtime_module("torchaudio")
+            _preload_worker_runtime_module("pyannote.audio")
 
 
 def _configure_worker_ffmpeg() -> None:
@@ -561,6 +607,11 @@ def _enable_worker_tensor_loader() -> None:
 
 
 def main() -> int:
+    _diagnostic_stage(
+        "boot",
+        platform=sys.platform,
+        architecture="x64" if sys.maxsize > 2**32 else "x86",
+    )
     messages: queue.Queue[dict[str, Any]] = queue.Queue()
 
     def reader() -> None:
@@ -576,6 +627,7 @@ def main() -> int:
     except queue.Empty:
         return 2
     if request.get("protocol") != PROTOCOL_VERSION or request.get("type") != "run":
+        _diagnostic_stage("invalid-request")
         return 2
 
     request_id = str(request.get("id") or "")
@@ -583,13 +635,24 @@ def main() -> int:
     payload = dict(request.get("payload") or {})
     payload["_request_id"] = request_id
     token = os.environ.pop(WORKER_TOKEN_ENV, None)
+    safe_operation = operation if operation in {
+        "probe", "extract_pose", "embed_pose", "extract_audio_features",
+        "extract_transcripts", "align_features",
+    } else "unknown"
+    profile = payload.get("profile")
+    safe_profile = profile if profile in {"standard", "complete"} else "unknown"
+    _diagnostic_stage("request-received", operation=safe_operation, profile=safe_profile)
+    _diagnostic_stage("base-loader-configured")
     _configure_worker_native_loader()
     try:
         with contextlib.redirect_stdout(_RedactingStream(sys.stderr, token)), contextlib.redirect_stderr(_RedactingStream(sys.stderr, token)):
+            _diagnostic_stage("ffmpeg-configured")
             _configure_worker_ffmpeg()
             _initialize_worker_operation_runtime(operation, payload)
+            _diagnostic_stage("provenance-validated")
             _validate_worker_runtime_provenance(operation, payload)
     except Exception as exc:
+        _diagnostic_stage("startup-error", error_type=type(exc).__name__)
         traceback.print_exc(file=_RedactingStream(sys.stderr, token))
         _emit(request_id, "error", message=_safe_error(exc, token))
         return 1
@@ -605,8 +668,10 @@ def main() -> int:
     def run_operation() -> None:
         try:
             with contextlib.redirect_stdout(_RedactingStream(sys.stderr, token)), contextlib.redirect_stderr(_RedactingStream(sys.stderr, token)):
+                _diagnostic_stage("operation-thread-started")
                 result_box.put(("result", _dispatch(operation, payload, cancelled, emit_progress, emit_status, token)))
         except Exception as exc:
+            _diagnostic_stage("operation-error", error_type=type(exc).__name__)
             traceback.print_exc(file=_RedactingStream(sys.stderr, token))
             result_box.put(("error", _safe_error(exc, token)))
 
@@ -616,13 +681,17 @@ def main() -> int:
             kind, value = result_box.get(timeout=0.1)
             if kind == "result":
                 try:
+                    _diagnostic_stage("result-provenance-validated")
                     _validate_worker_runtime_provenance(operation, payload)
                 except Exception as exc:
+                    _diagnostic_stage("result-provenance-error", error_type=type(exc).__name__)
                     traceback.print_exc(file=_RedactingStream(sys.stderr, token))
                     _emit(request_id, "error", message=_safe_error(exc, token))
                     return 1
+                _diagnostic_stage("result-emitted")
                 _emit(request_id, "result", result=value)
                 return 0
+            _diagnostic_stage("operation-error")
             _emit(request_id, "error", message=value)
             return 1
         except queue.Empty:

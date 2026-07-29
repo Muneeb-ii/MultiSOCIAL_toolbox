@@ -225,7 +225,37 @@ jobs:
             --profile "${MULTISOCIAL_BUILD_PROFILE}"
           python .github/scripts/validate_complete_bundle_layout.py
 
-      - name: Exercise packaged GUI-to-worker native boundary
+      - name: Diagnose direct packaged worker probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          workspace=".tmp/worker-diagnostic-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}"
+          mkdir -p "${workspace}"
+          printf '{"operation":"probe","payload":{"profile":"%s"}}\n' "${MULTISOCIAL_BUILD_PROFILE}" > "${workspace}/request.json"
+          python .github/scripts/run_windows_packaged_request.py \
+            --worker "dist/${app_name}/worker/MultiSOCIAL-Worker.exe" \
+            --request "${workspace}/request.json" \
+            --result "${workspace}/result.json" \
+            --timeout 60
+
+      - name: Diagnose packaged GUI-to-worker probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          workspace=".tmp/gui-worker-diagnostic-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}"
+          mkdir -p "${workspace}"
+          printf '{"operation":"probe","payload":{"profile":"%s"},"timeout_seconds":60}\n' "${MULTISOCIAL_BUILD_PROFILE}" > "${workspace}/request.json"
+          python .github/scripts/run_windows_packaged_request.py \
+            --gui "dist/${app_name}/${app_name}.exe" \
+            --request "${workspace}/request.json" \
+            --result "${workspace}/result.json" \
+            --timeout 75
+
+      - name: Exercise packaged GUI-to-worker native operations
         shell: bash
         env:
           MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
@@ -302,6 +332,40 @@ jobs:
           if (-not $archive) { throw "Downloaded Windows ZIP is missing" }
           Expand-Archive -LiteralPath $archive.FullName -DestinationPath $installRoot
           "INSTALL_ROOT=$installRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Diagnose relocated direct packaged worker probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          worker="$(find "${INSTALL_ROOT}" -path "*/worker/MultiSOCIAL-Worker.exe" -type f -print -quit)"
+          test -n "${worker}"
+          workspace=".tmp/compat-worker-diagnostic-${MULTISOCIAL_BUILD_PROFILE}"
+          mkdir -p "${workspace}"
+          printf '{"operation":"probe","payload":{"profile":"%s"}}\n' "${MULTISOCIAL_BUILD_PROFILE}" > "${workspace}/request.json"
+          python .github/scripts/run_windows_packaged_request.py \
+            --worker "${worker}" \
+            --request "${workspace}/request.json" \
+            --result "${workspace}/result.json" \
+            --timeout 60
+
+      - name: Diagnose relocated packaged GUI-to-worker probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          gui="$(find "${INSTALL_ROOT}" -name "${app_name}.exe" -type f -print -quit)"
+          test -n "${gui}"
+          workspace=".tmp/compat-gui-worker-diagnostic-${MULTISOCIAL_BUILD_PROFILE}"
+          mkdir -p "${workspace}"
+          printf '{"operation":"probe","payload":{"profile":"%s"},"timeout_seconds":60}\n' "${MULTISOCIAL_BUILD_PROFILE}" > "${workspace}/request.json"
+          python .github/scripts/run_windows_packaged_request.py \
+            --gui "${gui}" \
+            --request "${workspace}/request.json" \
+            --result "${workspace}/result.json" \
+            --timeout 75
 
       - name: Run extracted canonical ZIP through packaged boundary
         shell: bash

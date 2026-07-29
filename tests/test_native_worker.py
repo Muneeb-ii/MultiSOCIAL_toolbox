@@ -69,6 +69,28 @@ time.sleep(30)
     assert result["cancelled"] is True
     assert time.monotonic() - started < 5
 
+
+def test_worker_client_timeout_reports_the_last_redacted_diagnostic_stage(tmp_path, monkeypatch):
+    import native_worker_client
+    from native_worker_client import NativeWorkerClient, WorkerError
+
+    diagnostic = tmp_path / "worker.jsonl"
+    monkeypatch.setattr(native_worker_client, "_worker_diagnostic_path", lambda _request_id: diagnostic)
+    command = _worker_script(
+        tmp_path,
+        """import json, os, sys, time
+json.loads(sys.stdin.readline())
+with open(os.environ["MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"], "w", encoding="utf-8") as output:
+    output.write('{"stage":"preload:mediapipe"}\\n')
+time.sleep(30)
+""",
+    )
+
+    with pytest.raises(WorkerError, match="preload:mediapipe"):
+        NativeWorkerClient(command=command, timeout_seconds=0.05).run("probe", {})
+
+    assert diagnostic.is_file()
+
 def test_forced_cancellation_cleans_only_its_request_staging(tmp_path):
     from native_worker_client import NativeWorkerClient
 
@@ -212,6 +234,27 @@ def test_worker_probe_metadata_reports_the_current_architecture():
     assert metadata["platform"] == sys.platform
     assert metadata["is_64bit"] is (sys.maxsize > 2**32)
     assert "worker_runtime" in metadata
+
+
+def test_worker_diagnostics_exclude_unapproved_detail_fields(tmp_path, monkeypatch):
+    import json
+    import analysis_worker
+
+    diagnostic = tmp_path / "worker.jsonl"
+    monkeypatch.setenv(analysis_worker.WORKER_DIAGNOSTIC_ENV, str(diagnostic))
+
+    analysis_worker._diagnostic_stage(
+        "preload:mediapipe",
+        operation="probe",
+        secret="hf-private-token",
+        path=str(tmp_path),
+    )
+
+    record = json.loads(diagnostic.read_text(encoding="utf-8"))
+    assert record["stage"] == "preload:mediapipe"
+    assert record["operation"] == "probe"
+    assert "secret" not in record
+    assert "path" not in record
 
 
 def test_worker_runtime_flags_dlls_loaded_from_gui_root(tmp_path, monkeypatch):

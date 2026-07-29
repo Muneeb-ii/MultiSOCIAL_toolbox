@@ -13,6 +13,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -22,6 +23,7 @@ from typing import Any, Callable, Optional
 
 PROTOCOL_VERSION = 1
 WORKER_TOKEN_ENV = "MULTISOCIAL_WORKER_HF_TOKEN"
+WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
 _WINDOWS_LAUNCH_LOCK = threading.Lock()
 
 
@@ -51,6 +53,29 @@ def _redact(value: str, token: Optional[str]) -> str:
     if token:
         text = text.replace(token, "[REDACTED]")
     return text.replace("\r", " ").replace("\n", " ")[-2000:]
+
+
+def _diagnostic_stage(path: Path | None) -> str | None:
+    """Read only the final safe stage name from a worker diagnostic stream."""
+    if path is None:
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            stage = json.loads(line).get("stage")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(stage, str) and stage:
+            return stage
+    return None
+
+
+def _worker_diagnostic_path(request_id: str) -> Path:
+    """Create a private, non-user-facing breadcrumb file for one worker launch."""
+    return Path(tempfile.gettempdir()) / f"multisocial-worker-{request_id}.jsonl"
 
 
 def worker_command() -> list[str]:
@@ -226,9 +251,16 @@ def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
 class NativeWorkerClient:
     """Run exactly one native operation in an isolated console child process."""
 
-    def __init__(self, *, command: Optional[list[str]] = None, cancel_grace_seconds: float = 15.0):
+    def __init__(
+        self,
+        *,
+        command: Optional[list[str]] = None,
+        cancel_grace_seconds: float = 15.0,
+        timeout_seconds: float | None = None,
+    ):
         self.command = command or worker_command()
         self.cancel_grace_seconds = cancel_grace_seconds
+        self.timeout_seconds = timeout_seconds
 
     def run(
         self,
@@ -243,6 +275,9 @@ class NativeWorkerClient:
         request_id = str(uuid.uuid4())
         payload = _absolutize_worker_payload(payload)
         env = _packaged_windows_environment(self.command, hf_token)
+        diagnostic_path = _worker_diagnostic_path(request_id)
+        diagnostic_path.unlink(missing_ok=True)
+        env[WORKER_DIAGNOSTIC_ENV] = str(diagnostic_path)
         worker_dir = _worker_directory(self.command)
 
         process = _spawn_worker(
@@ -280,6 +315,8 @@ class NativeWorkerClient:
 
         cancel_sent = False
         cancel_deadline: Optional[float] = None
+        started = time.monotonic()
+        completed_successfully = False
         try:
             request = {
                 "protocol": PROTOCOL_VERSION,
@@ -292,6 +329,15 @@ class NativeWorkerClient:
             process.stdin.flush()
 
             while True:
+                if (
+                    self.timeout_seconds is not None
+                    and time.monotonic() - started >= self.timeout_seconds
+                ):
+                    stage = _diagnostic_stage(diagnostic_path) or "no worker stage recorded"
+                    raise WorkerError(
+                        f"Worker operation timed out after {self.timeout_seconds:g} seconds "
+                        f"at diagnostic stage: {stage}"
+                    )
                 if cancel_check and cancel_check() and not cancel_sent:
                     cancel_sent = True
                     cancel_deadline = time.monotonic() + self.cancel_grace_seconds
@@ -333,6 +379,7 @@ class NativeWorkerClient:
                     result.setdefault("succeeded", [])
                     result.setdefault("failed", [])
                     result.setdefault("cancelled", False)
+                    completed_successfully = True
                     return result
                 elif event == "error":
                     raise WorkerError(_redact(str(message.get("message", "Worker operation failed")), hf_token))
@@ -348,6 +395,8 @@ class NativeWorkerClient:
                 except subprocess.TimeoutExpired:
                     process.kill()
             _cleanup_request_staging(payload, request_id)
+            if completed_successfully:
+                diagnostic_path.unlink(missing_ok=True)
 
 
 class WindowsPoseProcessor:

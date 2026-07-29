@@ -65,6 +65,11 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny" in workflow
     assert "needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e" in workflow
     assert "windows_packaged_e2e.py" in workflow
+    assert "Diagnose direct packaged worker probe" in workflow
+    assert "Diagnose packaged GUI-to-worker probe" in workflow
+    assert "Diagnose relocated direct packaged worker probe" in workflow
+    assert "--worker \"dist/${app_name}/worker/MultiSOCIAL-Worker.exe\"" in workflow
+    assert "--timeout 60" in workflow
     assert "Expand-Archive" in workflow
     assert "path: release-artifacts/*-windows.zip" in workflow
     assert "blank.avi" not in workflow

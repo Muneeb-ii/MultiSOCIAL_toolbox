@@ -78,6 +78,8 @@ def _invoke(
     request = workspace / f"{name}-request.json"
     result = workspace / f"{name}-result.json"
     value = {"operation": operation, "payload": payload}
+    if operation == "probe":
+        value["timeout_seconds"] = 60
     if cancel_after_seconds is not None:
         value["cancel_after_seconds"] = cancel_after_seconds
     request.write_text(json.dumps(value), encoding="utf-8")
@@ -86,6 +88,7 @@ def _invoke(
         request,
         result,
         verify_heavy_pose_asset=verify_heavy_pose_asset,
+        timeout=75 if operation == "probe" else 1200,
     )
     return dict(response["result"])
 
