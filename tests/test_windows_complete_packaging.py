@@ -142,6 +142,8 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "_PYI_PARENT_PROCESS_LEVEL" in launcher_source
     assert "CreateProcessW" in launcher_source
     assert "CREATE_NO_WINDOW" in launcher_source
+    assert "MULTISOCIAL_WORKER_PROTOCOL_HOST" in launcher_source
+    assert "socket_protocol ? FALSE : TRUE" in launcher_source
     assert "CLEAN_BOOTSTRAP_ARGUMENT" not in launcher_source
     assert "WriteFile(" in launcher_source
     launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
@@ -171,3 +173,14 @@ def test_windows_gui_does_not_force_gpu_configuration_into_the_private_worker():
     assert 'if not sys.platform.startswith("win"):' in app_source
     assert '"CUDA_VISIBLE_DEVICES"' in client_source
     assert '"PYTORCH_ENABLE_MPS_FALLBACK"' in client_source
+
+
+def test_packaged_windows_gui_uses_handle_free_authenticated_worker_protocol():
+    client_source = (ROOT / "src" / "native_worker_client.py").read_text(encoding="utf-8")
+    worker_source = (ROOT / "src" / "analysis_worker.py").read_text(encoding="utf-8")
+
+    assert "WORKER_PROTOCOL_HOST_ENV" in client_source
+    assert "socket.create_connection" in worker_source
+    assert "event\": \"ready\"" in worker_source
+    assert "stdin=subprocess.DEVNULL" in client_source
+    assert "stdout=subprocess.DEVNULL" in client_source

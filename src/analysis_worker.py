@@ -17,6 +17,7 @@ import os
 import platform
 import queue
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -35,6 +36,7 @@ from native_worker_client import (
 
 
 _WORKER_STARTED_AT = time.monotonic()
+_PROTOCOL_OUTPUT = sys.stdout
 
 
 def _is_embedded_worker_runtime() -> bool:
@@ -98,15 +100,40 @@ class _RedactingStream(io.TextIOBase):
         text = str(value)
         if self.token:
             text = text.replace(self.token, "[REDACTED]")
-        return self.target.write(text)
+        return self.target.write(text) if self.target is not None else len(text)
 
     def flush(self):
-        return self.target.flush()
+        return self.target.flush() if self.target is not None else None
 
 
 def _emit(request_id: str, event: str, **values: Any) -> None:
     message = {"protocol": PROTOCOL_VERSION, "id": request_id, "event": event, **values}
-    print(json.dumps(message, separators=(",", ":")), flush=True)
+    _PROTOCOL_OUTPUT.write(json.dumps(message, separators=(",", ":")) + "\n")
+    _PROTOCOL_OUTPUT.flush()
+
+
+def _open_protocol_stream() -> tuple[Any, Any]:
+    """Use the private loopback protocol when the GUI intentionally has no pipes."""
+    host = os.environ.pop("MULTISOCIAL_WORKER_PROTOCOL_HOST", None)
+    port = os.environ.pop("MULTISOCIAL_WORKER_PROTOCOL_PORT", None)
+    token = os.environ.pop("MULTISOCIAL_WORKER_PROTOCOL_TOKEN", None)
+    if not any((host, port, token)):
+        return sys.stdin, sys.stdout
+    if host != "127.0.0.1" or not port or not token:
+        raise RuntimeError("invalid private worker protocol configuration")
+    try:
+        port_number = int(port)
+    except ValueError as exc:
+        raise RuntimeError("invalid private worker protocol endpoint") from exc
+    if not 1 <= port_number <= 65535:
+        raise RuntimeError("invalid private worker protocol endpoint")
+    connection = socket.create_connection((host, port_number), timeout=15)
+    connection.settimeout(None)
+    reader = connection.makefile("r", encoding="utf-8", errors="replace", newline="\n")
+    writer = connection.makefile("w", encoding="utf-8", errors="replace", newline="\n", buffering=1)
+    writer.write(json.dumps({"protocol": PROTOCOL_VERSION, "event": "ready", "token": token}, separators=(",", ":")) + "\n")
+    writer.flush()
+    return reader, writer
 
 
 def _safe_error(error: BaseException, token: str | None) -> str:
@@ -652,15 +679,21 @@ def _enable_worker_tensor_loader() -> None:
 
 
 def main() -> int:
+    global _PROTOCOL_OUTPUT
     _diagnostic_stage(
         "boot",
         platform=sys.platform,
         architecture="x64" if sys.maxsize > 2**32 else "x86",
     )
+    try:
+        protocol_input, _PROTOCOL_OUTPUT = _open_protocol_stream()
+    except Exception as exc:
+        _diagnostic_stage("protocol-connect-error", error_type=type(exc).__name__)
+        return 2
     messages: queue.Queue[dict[str, Any]] = queue.Queue()
 
     def reader() -> None:
-        for line in sys.stdin:
+        for line in protocol_input:
             try:
                 messages.put(json.loads(line))
             except json.JSONDecodeError:

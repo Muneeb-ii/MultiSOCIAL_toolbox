@@ -1,11 +1,10 @@
 /*
  * Native trampoline for the private Windows analysis worker.
  *
- * A PyInstaller GUI sets its own DLL search directory. Windows inherits that
- * process-level loader state before a child PyInstaller bootloader runs, which
- * can make MediaPipe resolve GUI runtime DLLs. This static-CRT executable has
- * no Python or ML dependencies. It clears the inherited search state and then
- * starts the real worker with the same standard handles and exit status.
+ * The packaged GUI never shares native runtime files with this CPython worker.
+ * For GUI-originated launches the worker speaks on an authenticated loopback
+ * socket, so this launcher can create it without inheriting GUI standard
+ * handles. Direct command-line diagnostics retain their stdio protocol.
  */
 
 #define _WIN32_WINNT 0x0A00
@@ -76,6 +75,7 @@ int wmain(void) {
     WCHAR *separator;
     STARTUPINFOW startup_info;
     PROCESS_INFORMATION process_info;
+    BOOL socket_protocol;
 
     if (!GetModuleFileNameW(NULL, launcher_path, ARRAYSIZE(launcher_path))) {
         return fail(GetLastError());
@@ -105,10 +105,15 @@ int wmain(void) {
 
     ZeroMemory(&startup_info, sizeof(startup_info));
     startup_info.cb = sizeof(startup_info);
-    startup_info.dwFlags = STARTF_USESTDHANDLES;
-    startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    startup_info.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-    startup_info.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    socket_protocol = GetEnvironmentVariableW(
+        L"MULTISOCIAL_WORKER_PROTOCOL_HOST", NULL, 0
+    ) > 0;
+    if (!socket_protocol) {
+        startup_info.dwFlags = STARTF_USESTDHANDLES;
+        startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        startup_info.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+        startup_info.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    }
     ZeroMemory(&process_info, sizeof(process_info));
     if (StringCchPrintfW(command_line, ARRAYSIZE(command_line), L"\"%s\" -I \"%s\"", worker_python, worker_script) != S_OK) {
         return fail(ERROR_BUFFER_OVERFLOW);
@@ -118,7 +123,7 @@ int wmain(void) {
             command_line,
             NULL,
             NULL,
-            TRUE,
+            socket_protocol ? FALSE : TRUE,
             CREATE_NO_WINDOW,
             NULL,
             launcher_path,

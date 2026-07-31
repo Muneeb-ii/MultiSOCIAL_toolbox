@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import io
+import json
+import queue
 import sys
 import threading
 import time
@@ -131,6 +134,133 @@ def test_windows_worker_launch_uses_deterministic_windowless_creation(monkeypatc
     kwargs = native_worker_client._worker_popen_kwargs()
 
     assert kwargs == {"creationflags": 0x08000000}
+
+
+def test_packaged_windows_worker_uses_an_authenticated_socket_not_gui_stdio(tmp_path, monkeypatch):
+    import native_worker_client
+    from native_worker_client import NativeWorkerClient
+
+    class Reader:
+        def __init__(self):
+            self.lines = queue.Queue()
+
+        def __iter__(self):
+            while (line := self.lines.get()) is not None:
+                yield line
+
+    class Writer(io.StringIO):
+        def __init__(self, reader):
+            super().__init__()
+            self.reader = reader
+
+        def write(self, value):
+            message = json.loads(value)
+            if message.get("type") == "run":
+                self.reader.lines.put(
+                    json.dumps(
+                        {
+                            "protocol": 1,
+                            "id": message["id"],
+                            "event": "result",
+                            "result": {"succeeded": ["socket"], "failed": [], "cancelled": False},
+                        }
+                    )
+                    + "\n"
+                )
+            return super().write(value)
+
+    class Connection:
+        def __init__(self):
+            self.reader = Reader()
+            self.writer = Writer(self.reader)
+
+        def makefile(self, mode, **_kwargs):
+            return self.reader if mode == "r" else self.writer
+
+        def close(self):
+            self.reader.lines.put(None)
+
+    class Listener:
+        def getsockname(self):
+            return ("127.0.0.1", 4242)
+
+        def close(self):
+            pass
+
+    class Process:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+        def terminate(self):
+            pass
+
+    connection = Connection()
+    connection.reader.lines.put(
+        json.dumps({"protocol": 1, "event": "ready", "token": "expected-token"}) + "\n"
+    )
+    spawned = []
+    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
+    monkeypatch.setattr(native_worker_client.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(native_worker_client, "_worker_popen_kwargs", lambda: {})
+    monkeypatch.setattr(native_worker_client, "_create_worker_protocol_listener", Listener)
+    monkeypatch.setattr(native_worker_client, "_accept_worker_protocol", lambda *_args: connection)
+    monkeypatch.setattr(native_worker_client.secrets, "token_urlsafe", lambda _size: "expected-token")
+    monkeypatch.setattr(native_worker_client, "_spawn_worker", lambda *args, **kwargs: spawned.append(kwargs) or Process())
+
+    result = NativeWorkerClient(command=["fake-worker"]).run("probe", {})
+
+    assert result["succeeded"] == ["socket"]
+    assert spawned[0]["stdin"] is native_worker_client.subprocess.DEVNULL
+    assert spawned[0]["stdout"] is native_worker_client.subprocess.DEVNULL
+    assert spawned[0]["stderr"] is native_worker_client.subprocess.DEVNULL
+
+
+def test_worker_socket_protocol_consumes_its_configuration_and_announces_ready(monkeypatch):
+    import analysis_worker
+
+    class Connection:
+        def __init__(self):
+            self.reader = io.StringIO()
+            self.writer = io.StringIO()
+            self.timeout = None
+
+        def settimeout(self, value):
+            self.timeout = value
+
+        def makefile(self, mode, **_kwargs):
+            return self.reader if mode == "r" else self.writer
+
+    connection = Connection()
+    monkeypatch.setenv("MULTISOCIAL_WORKER_PROTOCOL_HOST", "127.0.0.1")
+    monkeypatch.setenv("MULTISOCIAL_WORKER_PROTOCOL_PORT", "4242")
+    monkeypatch.setenv("MULTISOCIAL_WORKER_PROTOCOL_TOKEN", "private-nonce")
+    monkeypatch.setattr(
+        analysis_worker.socket,
+        "create_connection",
+        lambda endpoint, timeout: connection if endpoint == ("127.0.0.1", 4242) and timeout == 15 else None,
+    )
+
+    reader, writer = analysis_worker._open_protocol_stream()
+
+    assert reader is connection.reader
+    assert writer is connection.writer
+    assert connection.timeout is None
+    assert json.loads(connection.writer.getvalue()) == {
+        "protocol": 1,
+        "event": "ready",
+        "token": "private-nonce",
+    }
+    assert "MULTISOCIAL_WORKER_PROTOCOL_HOST" not in os.environ
+    assert "MULTISOCIAL_WORKER_PROTOCOL_PORT" not in os.environ
+    assert "MULTISOCIAL_WORKER_PROTOCOL_TOKEN" not in os.environ
 
 
 def test_windows_forced_cancellation_terminates_the_worker_process_tree(monkeypatch):

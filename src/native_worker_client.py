@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import glob
 import ctypes
+import hmac
 import json
 import os
 import queue
+import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -27,6 +30,9 @@ WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
 # Opt-in CI-only switch. Normal application launches always remove the
 # short-lived diagnostic file once a request completes successfully.
 WORKER_PRESERVE_DIAGNOSTICS_ENV = "MULTISOCIAL_PRESERVE_WORKER_DIAGNOSTICS"
+WORKER_PROTOCOL_HOST_ENV = "MULTISOCIAL_WORKER_PROTOCOL_HOST"
+WORKER_PROTOCOL_PORT_ENV = "MULTISOCIAL_WORKER_PROTOCOL_PORT"
+WORKER_PROTOCOL_TOKEN_ENV = "MULTISOCIAL_WORKER_PROTOCOL_TOKEN"
 WORKER_EXECUTABLE_NAME = "python.exe"
 WORKER_LAUNCHER_NAME = "MultiSOCIAL-Worker-Launcher.exe"
 _PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES = (
@@ -108,6 +114,41 @@ def _worker_popen_kwargs() -> dict[str, Any]:
     if sys.platform != "win32":
         return {}
     return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+
+
+def _uses_socket_worker_protocol() -> bool:
+    """Use a handle-free protocol only for packaged Windows GUI launches."""
+    return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+
+
+def _create_worker_protocol_listener() -> socket.socket:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(0.1)
+    return listener
+
+
+def _accept_worker_protocol(
+    listener: socket.socket,
+    process: subprocess.Popen,
+    *,
+    timeout_seconds: float = 30.0,
+) -> socket.socket:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            connection, address = listener.accept()
+        except socket.timeout:
+            if process.poll() is not None:
+                raise WorkerError(f"worker exited with code {process.returncode} before connecting")
+            continue
+        if address[0] == "127.0.0.1":
+            connection.settimeout(None)
+            return connection
+        connection.close()
+    raise WorkerError("worker did not connect to its private protocol endpoint")
 
 
 def _path_is_within(path: str | Path, root: str | Path) -> bool:
@@ -304,45 +345,101 @@ class NativeWorkerClient:
         diagnostic_path.unlink(missing_ok=True)
         env[WORKER_DIAGNOSTIC_ENV] = str(diagnostic_path)
         worker_dir = _worker_directory(self.command)
-
-        process = _spawn_worker(
-            self.command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            env=env,
-            cwd=str(worker_dir),
-            **_worker_popen_kwargs(),
-        )
-        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-
+        socket_protocol = _uses_socket_worker_protocol()
+        listener: socket.socket | None = None
+        connection: socket.socket | None = None
+        protocol_writer: Any = None
+        if socket_protocol:
+            listener = _create_worker_protocol_listener()
+            host, port = listener.getsockname()
+            protocol_token = secrets.token_urlsafe(32)
+            env[WORKER_PROTOCOL_HOST_ENV] = str(host)
+            env[WORKER_PROTOCOL_PORT_ENV] = str(port)
+            env[WORKER_PROTOCOL_TOKEN_ENV] = protocol_token
+            process = _spawn_worker(
+                self.command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                cwd=str(worker_dir),
+                **_worker_popen_kwargs(),
+            )
+        else:
+            process = _spawn_worker(
+                self.command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                env=env,
+                cwd=str(worker_dir),
+                **_worker_popen_kwargs(),
+            )
         events: queue.Queue[tuple[str, str]] = queue.Queue()
         stderr_lines: list[str] = []
+        if socket_protocol:
+            assert listener is not None
+            try:
+                connection = _accept_worker_protocol(listener, process)
+            except Exception:
+                listener.close()
+                _terminate_worker_tree(process)
+                raise
+            protocol_input = connection.makefile("r", encoding="utf-8", errors="replace", newline="\n")
+            protocol_writer = connection.makefile("w", encoding="utf-8", errors="replace", newline="\n", buffering=1)
+        else:
+            assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+            protocol_input = process.stdout
+            protocol_writer = process.stdin
 
-        def read_stdout() -> None:
-            for line in process.stdout:
-                events.put(("stdout", line))
-            events.put(("stdout_eof", ""))
+        def read_protocol() -> None:
+            for line in protocol_input:
+                events.put(("protocol", line))
+            events.put(("protocol_eof", ""))
 
-        def read_stderr() -> None:
-            for line in process.stderr:
-                cleaned = _redact(line, hf_token)
-                if cleaned:
-                    stderr_lines.append(cleaned)
-                    del stderr_lines[:-20]
+        threading.Thread(target=read_protocol, daemon=True).start()
+        if not socket_protocol:
+            def read_stderr() -> None:
+                assert process.stderr is not None
+                for line in process.stderr:
+                    cleaned = _redact(line, hf_token)
+                    if cleaned:
+                        stderr_lines.append(cleaned)
+                        del stderr_lines[:-20]
 
-        threading.Thread(target=read_stdout, daemon=True).start()
-        threading.Thread(target=read_stderr, daemon=True).start()
+            threading.Thread(target=read_stderr, daemon=True).start()
 
         cancel_sent = False
         cancel_deadline: Optional[float] = None
         started = time.monotonic()
         completed_successfully = False
         try:
+            if socket_protocol:
+                ready_deadline = time.monotonic() + 30.0
+                while time.monotonic() < ready_deadline:
+                    try:
+                        _, line = events.get(timeout=0.1)
+                    except queue.Empty:
+                        if process.poll() is not None:
+                            raise WorkerError(f"worker exited with code {process.returncode} before protocol handshake")
+                        continue
+                    try:
+                        ready = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        ready.get("protocol") == PROTOCOL_VERSION
+                        and ready.get("event") == "ready"
+                        and hmac.compare_digest(str(ready.get("token") or ""), protocol_token)
+                    ):
+                        break
+                    raise WorkerError("worker rejected its private protocol handshake")
+                else:
+                    raise WorkerError("worker did not complete its private protocol handshake")
             request = {
                 "protocol": PROTOCOL_VERSION,
                 "id": request_id,
@@ -350,8 +447,8 @@ class NativeWorkerClient:
                 "operation": operation,
                 "payload": payload,
             }
-            process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
-            process.stdin.flush()
+            protocol_writer.write(json.dumps(request, separators=(",", ":")) + "\n")
+            protocol_writer.flush()
 
             while True:
                 if (
@@ -366,8 +463,8 @@ class NativeWorkerClient:
                 if cancel_check and cancel_check() and not cancel_sent:
                     cancel_sent = True
                     cancel_deadline = time.monotonic() + self.cancel_grace_seconds
-                    process.stdin.write(json.dumps({"protocol": PROTOCOL_VERSION, "id": request_id, "type": "cancel"}) + "\n")
-                    process.stdin.flush()
+                    protocol_writer.write(json.dumps({"protocol": PROTOCOL_VERSION, "id": request_id, "type": "cancel"}) + "\n")
+                    protocol_writer.flush()
 
                 if cancel_deadline is not None and time.monotonic() >= cancel_deadline:
                     _terminate_worker_tree(process)
@@ -385,7 +482,7 @@ class NativeWorkerClient:
                         raise WorkerError(_redact(detail, hf_token))
                     continue
 
-                if event_kind != "stdout":
+                if event_kind != "protocol":
                     continue
                 try:
                     message = json.loads(line)
@@ -410,8 +507,16 @@ class NativeWorkerClient:
                     raise WorkerError(_redact(str(message.get("message", "Worker operation failed")), hf_token))
         finally:
             try:
-                process.stdin.close()
+                if protocol_writer is not None:
+                    protocol_writer.close()
             except Exception:
+                pass
+            try:
+                if listener is not None:
+                    listener.close()
+                if connection is not None:
+                    connection.close()
+            except OSError:
                 pass
             if process.poll() is None:
                 _terminate_worker_tree(process)
