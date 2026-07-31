@@ -111,6 +111,27 @@ def _path_has_marker(path: Path, markers: set[str]) -> bool:
     return bool(parts & markers) or any(marker in basename for marker in markers)
 
 
+def _complete_runtime_packages_in_standard_worker(worker: Path) -> list[str]:
+    """Return actually-installed Complete-only packages, not matching filenames.
+
+    ``transformers`` deliberately includes optional-dependency stubs such as
+    ``dummy_torchaudio_objects.py``.  PyInstaller's *build-time* hook package
+    similarly has files named after packages it can analyze.  Neither is an
+    installed worker runtime dependency, so the boundary check must inspect
+    concrete package roots and distribution metadata instead of substrings in
+    arbitrary filenames.
+    """
+
+    site_packages = worker / "Lib" / "site-packages"
+    hits: list[str] = []
+    for package in ("pyannote", "speechbrain", "torchaudio"):
+        if (site_packages / package).is_dir():
+            hits.append(str(Path("Lib/site-packages") / package))
+        metadata = sorted(site_packages.glob(f"{package}-*.dist-info"))
+        hits.extend(str(path.relative_to(worker)) for path in metadata if path.is_dir())
+    return hits
+
+
 def validate(root: Path, profile: str) -> None:
     app_name = "MultiSOCIAL-Complete" if profile == "complete" else "MultiSOCIAL-Standard"
     worker = root / "worker"
@@ -166,12 +187,7 @@ def validate(root: Path, profile: str) -> None:
     if not any(path.name.casefold() in {"torch_cpu.dll", "torch.dll"} for path in worker.rglob("*.dll")):
         raise RuntimeError("Worker Torch runtime is missing")
     if profile == "standard":
-        complete_only = {"pyannote", "speechbrain", "torchaudio"}
-        hits = [
-            str(path.relative_to(worker))
-            for path in _runtime_files(worker)
-            if _path_has_marker(path.relative_to(worker), complete_only)
-        ]
+        hits = _complete_runtime_packages_in_standard_worker(worker)
         if hits:
             raise RuntimeError("Standard worker contains Complete-only files: " + ", ".join(hits[:20]))
 

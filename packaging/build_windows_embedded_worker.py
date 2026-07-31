@@ -18,6 +18,16 @@ from windows_build_support import collect_vc_runtime_binaries
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# The worker is an application runtime, not a build environment.  These two
+# distributions are needed only to create the GUI bundle; copying their hook
+# source into the worker both wastes space and makes package-name based audits
+# report optional hook names (for example ``hook-torchaudio.py``) as runtimes.
+_BUILD_ONLY_WORKER_DIRECTORIES = {"pyinstaller", "_pyinstaller_hooks_contrib"}
+_BUILD_ONLY_WORKER_METADATA_PREFIXES = (
+    "pyinstaller-",
+    "pyinstaller_hooks_contrib-",
+)
+
 
 def _base_prefix(python: Path) -> Path:
     return Path(
@@ -45,6 +55,19 @@ def _copy_required_runtime(base: Path, destination: Path) -> None:
         shutil.copytree(source, destination / name, dirs_exist_ok=True)
 
 
+def _ignore_build_only_worker_files(_directory: str, names: list[str]) -> set[str]:
+    """Exclude PyInstaller's build tooling from the shipped worker runtime."""
+
+    ignored = set()
+    for name in names:
+        normalized = name.casefold()
+        if normalized in _BUILD_ONLY_WORKER_DIRECTORIES or normalized.startswith(
+            _BUILD_ONLY_WORKER_METADATA_PREFIXES
+        ):
+            ignored.add(name)
+    return ignored
+
+
 def build(python: Path, output: Path) -> None:
     python = python.resolve()
     if not python.is_file():
@@ -63,7 +86,12 @@ def build(python: Path, output: Path) -> None:
     # complete x64 set used by the GUI and validate it at package assembly.
     for source, _destination in collect_vc_runtime_binaries():
         shutil.copy2(source, output / Path(source).name)
-    shutil.copytree(site_packages, output / "Lib" / "site-packages", dirs_exist_ok=True)
+    shutil.copytree(
+        site_packages,
+        output / "Lib" / "site-packages",
+        dirs_exist_ok=True,
+        ignore=_ignore_build_only_worker_files,
+    )
     shutil.copytree(ROOT / "src", output / "app")
     shutil.copytree(ROOT / "assets", output / "assets")
     (output / "python310._pth").write_text(

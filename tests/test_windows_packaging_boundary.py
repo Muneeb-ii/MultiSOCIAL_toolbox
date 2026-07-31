@@ -358,6 +358,59 @@ def test_full_standard_bundle_validation_accepts_two_isolated_runtime_sets(
     validator.validate(root, "standard")
 
 
+def test_standard_bundle_validator_ignores_optional_stubs_and_build_hook_names(
+    tmp_path,
+    monkeypatch,
+):
+    validator = _load_packaging_module("validate_windows_bundle")
+    monkeypatch.setattr(validator, "_pe_machine", lambda _path: validator.PE_MACHINE_AMD64)
+    root = tmp_path / "MultiSOCIAL-Standard"
+    worker = root / "worker"
+    _create_runtime_root(root, "MultiSOCIAL-Standard.exe", validator.VC_RUNTIME_NAMES)
+    _create_runtime_root(worker, "python.exe", validator.VC_RUNTIME_NAMES, stable_abi=True)
+    (worker / "MultiSOCIAL-Worker-Launcher.exe").touch()
+    for relative in (
+        "Lib/site-packages/audresample/core/bin/win_amd64/audresample.dll",
+        "Lib/site-packages/opensmile/core/bin/win_amd64/SMILEapi.dll",
+        "assets/pose_landmark_heavy.tflite",
+        "mediapipe/python/_framework_bindings.pyd",
+        "cv2/cv2.pyd",
+        "torch/lib/torch_cpu.dll",
+        "Lib/site-packages/transformers/utils/dummy_torchaudio_objects.py",
+        "Lib/site-packages/_pyinstaller_hooks_contrib/stdhooks/hook-torchaudio.py",
+    ):
+        path = worker / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    validator.validate(root, "standard")
+
+
+def test_standard_bundle_validator_rejects_installed_complete_runtime(tmp_path, monkeypatch):
+    validator = _load_packaging_module("validate_windows_bundle")
+    monkeypatch.setattr(validator, "_pe_machine", lambda _path: validator.PE_MACHINE_AMD64)
+    root = tmp_path / "MultiSOCIAL-Standard"
+    worker = root / "worker"
+    _create_runtime_root(root, "MultiSOCIAL-Standard.exe", validator.VC_RUNTIME_NAMES)
+    _create_runtime_root(worker, "python.exe", validator.VC_RUNTIME_NAMES, stable_abi=True)
+    (worker / "MultiSOCIAL-Worker-Launcher.exe").touch()
+    for relative in (
+        "Lib/site-packages/audresample/core/bin/win_amd64/audresample.dll",
+        "Lib/site-packages/opensmile/core/bin/win_amd64/SMILEapi.dll",
+        "assets/pose_landmark_heavy.tflite",
+        "mediapipe/python/_framework_bindings.pyd",
+        "cv2/cv2.pyd",
+        "torch/lib/torch_cpu.dll",
+        "Lib/site-packages/torchaudio/__init__.py",
+    ):
+        path = worker / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    with pytest.raises(RuntimeError, match=r"Complete-only files: Lib/site-packages/torchaudio"):
+        validator.validate(root, "standard")
+
+
 def test_windows_locks_have_disjoint_gui_and_native_ownership():
     gui = (ROOT / "requirements" / "locks" / "windows-gui-py310.txt").read_text(encoding="utf-8").lower()
     worker = (ROOT / "requirements" / "locks" / "windows-standard-py310.txt").read_text(encoding="utf-8").lower()
