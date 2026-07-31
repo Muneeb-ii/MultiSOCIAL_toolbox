@@ -92,3 +92,6 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "wxpython==4.2.3" in gui_lock.lower()
     assert "torch==" not in gui_lock.lower()
     assert "pyannote.core==5.0.0" in complete_bootstrap
+    assert 'destination.glob("*.txt")' in e2e
+    assert 'transcripts.glob("*.txt")' in e2e
+    assert 'glob("*.json")' not in e2e

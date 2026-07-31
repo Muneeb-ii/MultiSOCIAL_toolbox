@@ -114,7 +114,7 @@ def _run_diarization(gui: Path, workspace: Path, tone: Path) -> None:
         },
     )
     _assert_success(result, "Complete diarization")
-    if not list(destination.glob("*.json")):
+    if not list(destination.glob("*.txt")):
         raise RuntimeError("Complete diarization did not commit a transcript")
 
 
@@ -290,7 +290,7 @@ def main() -> None:
             },
         )
         _assert_success(whisper_result, "Whisper ASR")
-        if not list(transcripts.glob("*.json")):
+        if not list(transcripts.glob("*.txt")):
             raise RuntimeError("Whisper did not commit a transcript")
 
     if args.include_diarization:
