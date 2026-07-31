@@ -35,3 +35,14 @@ def test_diagnostic_timeline_emits_only_stage_names_and_elapsed_times(tmp_path):
         {"stage": "boot", "elapsed_ms": 4},
         {"stage": "preload:mediapipe", "elapsed_ms": 1234},
     ]
+
+
+def test_launcher_stderr_is_decoded_bounded_and_redacted(monkeypatch):
+    runner = _request_runner()
+    monkeypatch.setenv("MULTISOCIAL_WORKER_HF_TOKEN", "hf-private-token")
+
+    message = runner._safe_launcher_stderr(
+        "Worker launcher failed (2)\x00 at C:\\Users\\secret\\worker hf-private-token\n"
+    )
+
+    assert message == "Worker launcher failed (2) at [REDACTED_PATH] [REDACTED]"

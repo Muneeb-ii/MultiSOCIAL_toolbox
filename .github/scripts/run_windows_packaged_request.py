@@ -133,6 +133,17 @@ def _safe_protocol_error(event: dict | None) -> str:
     return message.replace("\r", " ").replace("\n", " ")[-500:]
 
 
+def _safe_launcher_stderr(value: str) -> str:
+    """Return a bounded, redacted launcher diagnostic for a failed direct probe."""
+    token = os.environ.get("MULTISOCIAL_WORKER_HF_TOKEN")
+    message = value.replace("\x00", "")
+    if token:
+        message = message.replace(token, "[REDACTED]")
+    message = re.sub(r"[A-Za-z]:[\\/][^\s'\"]+", "[REDACTED_PATH]", message)
+    message = message.replace("\r", " ").replace("\n", " ").strip()
+    return message[-500:] or "no launcher stderr returned"
+
+
 def run_worker_request(
     worker: Path,
     request: Path,
@@ -175,7 +186,7 @@ def run_worker_request(
         cwd=str(worker.parent),
         env=environment,
     )
-    stdout, _stderr = _communicate_bounded(
+    stdout, stderr = _communicate_bounded(
         process,
         input_text=json.dumps(protocol_request, separators=(",", ":")) + "\n",
         timeout=timeout,
@@ -193,7 +204,8 @@ def run_worker_request(
         raise RuntimeError(
             f"Packaged direct worker probe failed (exit {process.returncode}) "
             f"at stages: {_diagnostic_stages(diagnostic_path)}: "
-            f"{_safe_protocol_error(response)}"
+            f"{_safe_protocol_error(response)}; "
+            f"launcher stderr: {_safe_launcher_stderr(stderr)}"
         )
     output = {"ok": True, "result": dict(response.get("result") or {})}
     if preserve_diagnostics:

@@ -37,17 +37,18 @@ static void reset_pyinstaller_environment(void) {
 }
 
 static int fail(DWORD error) {
-    WCHAR message[128];
+    char message[128];
     HANDLE standard_error;
     DWORD written;
 
-    StringCchPrintfW(message, ARRAYSIZE(message), L"Worker launcher failed (%lu)\n", error);
+    /* stderr is a byte stream.  Keep this ASCII so Python and CI can report it. */
+    StringCchPrintfA(message, ARRAYSIZE(message), "Worker launcher failed (%lu)\n", error);
     standard_error = GetStdHandle(STD_ERROR_HANDLE);
     if (standard_error != INVALID_HANDLE_VALUE && standard_error != NULL) {
         WriteFile(
             standard_error,
             message,
-            (DWORD)(wcslen(message) * sizeof(WCHAR)),
+            (DWORD)lstrlenA(message),
             &written,
             NULL
         );
@@ -94,7 +95,8 @@ static BOOL create_ascii_drive_alias(
     WCHAR device_name[3] = {L'\0', L':', L'\0'};
     int index;
 
-    if (drives == 0 || StringCchPrintfW(target, target_size, L"\\\\??\\%s", source) != S_OK) {
+    /* DefineDosDevice's raw target is an NT path: \??\C:\..., not \\??\C:\.... */
+    if (drives == 0 || StringCchPrintfW(target, target_size, L"\\??\\%s", source) != S_OK) {
         return FALSE;
     }
     for (index = 25; index >= 3; --index) {
@@ -137,10 +139,16 @@ int wmain(void) {
     PROCESS_INFORMATION process_info;
     BOOL socket_protocol;
     BOOL drive_alias_created = FALSE;
+    DWORD error;
+    DWORD launcher_length;
     int exit_code;
 
-    if (!GetModuleFileNameW(NULL, launcher_path, ARRAYSIZE(launcher_path))) {
+    launcher_length = GetModuleFileNameW(NULL, launcher_path, ARRAYSIZE(launcher_path));
+    if (launcher_length == 0) {
         return fail(GetLastError());
+    }
+    if (launcher_length >= ARRAYSIZE(launcher_path)) {
+        return fail(ERROR_INSUFFICIENT_BUFFER);
     }
     separator = wcsrchr(launcher_path, L'\\');
     if (separator == NULL) {
@@ -180,10 +188,11 @@ int wmain(void) {
         return fail(ERROR_BUFFER_OVERFLOW);
     }
     if (GetFileAttributesW(worker_python) == INVALID_FILE_ATTRIBUTES || GetFileAttributesW(worker_script) == INVALID_FILE_ATTRIBUTES) {
+        error = GetLastError();
         if (drive_alias_created) {
             remove_ascii_drive_alias(drive_alias, drive_target);
         }
-        return fail(GetLastError());
+        return fail(error);
     }
 
     socket_protocol = GetEnvironmentVariableW(
@@ -203,10 +212,11 @@ int wmain(void) {
             child_directory, ARRAYSIZE(child_directory)
         );
         if (directory_length == 0 || directory_length >= ARRAYSIZE(child_directory)) {
+            error = directory_length == 0 ? GetLastError() : ERROR_INSUFFICIENT_BUFFER;
             if (drive_alias_created) {
                 remove_ascii_drive_alias(drive_alias, drive_target);
             }
-            return fail(GetLastError());
+            return fail(error);
         }
     } else if (StringCchCopyW(child_directory, ARRAYSIZE(child_directory), runtime_root) != S_OK) {
         if (drive_alias_created) {
@@ -241,10 +251,11 @@ int wmain(void) {
             child_directory,
             &startup_info,
             &process_info)) {
+        error = GetLastError();
         if (drive_alias_created) {
             remove_ascii_drive_alias(drive_alias, drive_target);
         }
-        return fail(GetLastError());
+        return fail(error);
     }
     exit_code = wait_for_child(&process_info);
     if (drive_alias_created) {

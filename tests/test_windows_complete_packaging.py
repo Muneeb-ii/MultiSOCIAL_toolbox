@@ -149,6 +149,12 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "GetShortPathNameW" in launcher_source
     assert "DefineDosDeviceW" in launcher_source
     assert "create_ascii_drive_alias" in launcher_source
+    assert 'L"\\\\\\\\??\\\\%s"' not in launcher_source
+    assert 'L"\\\\??\\\\%s"' in launcher_source
+    assert "StringCchPrintfA" in launcher_source
+    assert "lstrlenA(message)" in launcher_source
+    assert "error = GetLastError();" in launcher_source
+    assert "return fail(error);" in launcher_source
     assert "CLEAN_BOOTSTRAP_ARGUMENT" not in launcher_source
     assert "WriteFile(" in launcher_source
     launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
