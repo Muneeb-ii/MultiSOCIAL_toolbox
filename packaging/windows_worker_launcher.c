@@ -40,8 +40,20 @@ static void reset_pyinstaller_environment(void) {
 
 static int fail(DWORD error) {
     WCHAR message[128];
+    HANDLE standard_error;
+    DWORD written;
+
     StringCchPrintfW(message, ARRAYSIZE(message), L"Worker launcher failed (%lu)\n", error);
-    WriteConsoleW(GetStdHandle(STD_ERROR_HANDLE), message, (DWORD)wcslen(message), NULL, NULL);
+    standard_error = GetStdHandle(STD_ERROR_HANDLE);
+    if (standard_error != INVALID_HANDLE_VALUE && standard_error != NULL) {
+        WriteFile(
+            standard_error,
+            message,
+            (DWORD)(wcslen(message) * sizeof(WCHAR)),
+            &written,
+            NULL
+        );
+    }
     return 1;
 }
 
@@ -63,6 +75,7 @@ static BOOL is_clean_bootstrap(void) {
 
 int wmain(void) {
     WCHAR launcher_path[MAX_PATH];
+    WCHAR launcher_executable[MAX_PATH];
     WCHAR worker_python[MAX_PATH];
     WCHAR worker_script[MAX_PATH];
     WCHAR command_line[MAX_PATH * 2 + 64];
@@ -78,6 +91,15 @@ int wmain(void) {
         return fail(ERROR_BAD_PATHNAME);
     }
     *separator = L'\0';
+    if (StringCchPrintfW(
+            launcher_executable,
+            ARRAYSIZE(launcher_executable),
+            L"%s\\%s",
+            launcher_path,
+            LAUNCHER_NAME
+        ) != S_OK) {
+        return fail(ERROR_BUFFER_OVERFLOW);
+    }
     if (StringCchPrintfW(worker_python, ARRAYSIZE(worker_python), L"%s\\%s", launcher_path, WORKER_PYTHON) != S_OK) {
         return fail(ERROR_BUFFER_OVERFLOW);
     }
@@ -109,13 +131,13 @@ int wmain(void) {
                 command_line,
                 ARRAYSIZE(command_line),
                 L"\"%s\" %s",
-                launcher_path,
+                launcher_executable,
                 CLEAN_BOOTSTRAP_ARGUMENT
             ) != S_OK) {
             return fail(ERROR_BUFFER_OVERFLOW);
         }
         if (!CreateProcessW(
-                launcher_path,
+                launcher_executable,
                 command_line,
                 NULL,
                 NULL,
