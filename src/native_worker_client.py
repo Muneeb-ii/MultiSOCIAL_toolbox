@@ -255,6 +255,22 @@ def _spawn_worker(command: list[str], **kwargs: Any) -> subprocess.Popen:
     return subprocess.Popen(command, **kwargs)
 
 
+def _terminate_worker_tree(process: subprocess.Popen) -> None:
+    """Terminate the launcher and every private worker descendant on Windows."""
+
+    if process.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
+    process.terminate()
+
+
 class NativeWorkerClient:
     """Run exactly one native operation in an isolated console child process."""
 
@@ -357,7 +373,7 @@ class NativeWorkerClient:
                     process.stdin.flush()
 
                 if cancel_deadline is not None and time.monotonic() >= cancel_deadline:
-                    process.terminate()
+                    _terminate_worker_tree(process)
                     try:
                         process.wait(timeout=3)
                     except subprocess.TimeoutExpired:
@@ -401,7 +417,7 @@ class NativeWorkerClient:
             except Exception:
                 pass
             if process.poll() is None:
-                process.terminate()
+                _terminate_worker_tree(process)
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:

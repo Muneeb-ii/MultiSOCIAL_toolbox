@@ -142,6 +142,29 @@ def test_windows_worker_launch_does_not_show_a_console(monkeypatch):
     assert kwargs["startupinfo"].wShowWindow == 0
 
 
+def test_windows_forced_cancellation_terminates_the_worker_process_tree(monkeypatch):
+    import native_worker_client
+
+    class Process:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+    calls = []
+    monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
+    monkeypatch.setattr(
+        native_worker_client.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    native_worker_client._terminate_worker_tree(Process())
+
+    assert calls[0][0] == ["taskkill", "/PID", "123", "/T", "/F"]
+
+
 def test_frozen_windows_worker_uses_its_private_runtime_directory(tmp_path, monkeypatch):
     import native_worker_client
 

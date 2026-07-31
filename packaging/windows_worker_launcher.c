@@ -18,6 +18,7 @@
 #define LAUNCHER_NAME L"MultiSOCIAL-Worker-Launcher.exe"
 #define WORKER_PYTHON L"python.exe"
 #define WORKER_SCRIPT L"app\\analysis_worker.py"
+#define CLEAN_BOOTSTRAP_ARGUMENT L"--multisocial-worker-clean-bootstrap"
 
 static void reset_pyinstaller_environment(void) {
     const WCHAR *const names[] = {
@@ -44,15 +45,30 @@ static int fail(DWORD error) {
     return 1;
 }
 
+static int wait_for_child(PROCESS_INFORMATION *process_info) {
+    DWORD exit_code = 1;
+
+    CloseHandle(process_info->hThread);
+    WaitForSingleObject(process_info->hProcess, INFINITE);
+    if (!GetExitCodeProcess(process_info->hProcess, &exit_code)) {
+        exit_code = 1;
+    }
+    CloseHandle(process_info->hProcess);
+    return (int)exit_code;
+}
+
+static BOOL is_clean_bootstrap(void) {
+    return wcsstr(GetCommandLineW(), CLEAN_BOOTSTRAP_ARGUMENT) != NULL;
+}
+
 int wmain(void) {
     WCHAR launcher_path[MAX_PATH];
     WCHAR worker_python[MAX_PATH];
     WCHAR worker_script[MAX_PATH];
-    WCHAR command_line[MAX_PATH * 2 + 6];
+    WCHAR command_line[MAX_PATH * 2 + 64];
     WCHAR *separator;
     STARTUPINFOW startup_info;
     PROCESS_INFORMATION process_info;
-    DWORD exit_code = 1;
 
     if (!GetModuleFileNameW(NULL, launcher_path, ARRAYSIZE(launcher_path))) {
         return fail(GetLastError());
@@ -88,6 +104,31 @@ int wmain(void) {
     startup_info.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
     startup_info.hStdError = GetStdHandle(STD_ERROR_HANDLE);
     ZeroMemory(&process_info, sizeof(process_info));
+    if (!is_clean_bootstrap()) {
+        if (StringCchPrintfW(
+                command_line,
+                ARRAYSIZE(command_line),
+                L"\"%s\" %s",
+                launcher_path,
+                CLEAN_BOOTSTRAP_ARGUMENT
+            ) != S_OK) {
+            return fail(ERROR_BUFFER_OVERFLOW);
+        }
+        if (!CreateProcessW(
+                launcher_path,
+                command_line,
+                NULL,
+                NULL,
+                TRUE,
+                CREATE_NEW_PROCESS_GROUP,
+                NULL,
+                launcher_path,
+                &startup_info,
+                &process_info)) {
+            return fail(GetLastError());
+        }
+        return wait_for_child(&process_info);
+    }
     if (StringCchPrintfW(command_line, ARRAYSIZE(command_line), L"\"%s\" -I \"%s\"", worker_python, worker_script) != S_OK) {
         return fail(ERROR_BUFFER_OVERFLOW);
     }
@@ -104,11 +145,5 @@ int wmain(void) {
             &process_info)) {
         return fail(GetLastError());
     }
-    CloseHandle(process_info.hThread);
-    WaitForSingleObject(process_info.hProcess, INFINITE);
-    if (!GetExitCodeProcess(process_info.hProcess, &exit_code)) {
-        exit_code = 1;
-    }
-    CloseHandle(process_info.hProcess);
-    return (int)exit_code;
+    return wait_for_child(&process_info);
 }

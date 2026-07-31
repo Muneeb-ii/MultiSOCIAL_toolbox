@@ -141,6 +141,9 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "_PYI_ARCHIVE_FILE" in launcher_source
     assert "_PYI_PARENT_PROCESS_LEVEL" in launcher_source
     assert "CreateProcessW" in launcher_source
+    assert "CLEAN_BOOTSTRAP_ARGUMENT" in launcher_source
+    assert "is_clean_bootstrap" in launcher_source
+    assert "CREATE_NEW_PROCESS_GROUP" in launcher_source
     launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
     assert "/MT" in launcher_builder
     assert "def _write_build_batch(output: Path)" in launcher_builder
