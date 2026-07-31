@@ -71,6 +71,7 @@ int wmain(void) {
     WCHAR launcher_path[MAX_PATH];
     WCHAR worker_python[MAX_PATH];
     WCHAR worker_script[MAX_PATH];
+    WCHAR child_directory[MAX_PATH];
     WCHAR command_line[MAX_PATH * 2 + 64];
     WCHAR *separator;
     STARTUPINFOW startup_info;
@@ -95,19 +96,31 @@ int wmain(void) {
         return fail(GetLastError());
     }
 
+    socket_protocol = GetEnvironmentVariableW(
+        L"MULTISOCIAL_WORKER_PROTOCOL_HOST", NULL, 0
+    ) > 0;
     /* Reset both legacy and modern process DLL-directory mechanisms. */
     SetDllDirectoryW(NULL);
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     reset_pyinstaller_environment();
-    if (!SetCurrentDirectoryW(launcher_path)) {
-        return fail(GetLastError());
+    /* OpenSMILE's Windows bridge incorrectly encodes its working directory as
+       ASCII. The installed application path may legitimately contain Unicode.
+       Socket-mode workers use absolute interpreter, module, asset, and output
+       paths, so a stable system directory removes that native-library limit
+       without changing any user-visible input or output path. */
+    if (socket_protocol) {
+        DWORD directory_length = GetWindowsDirectoryW(
+            child_directory, ARRAYSIZE(child_directory)
+        );
+        if (directory_length == 0 || directory_length >= ARRAYSIZE(child_directory)) {
+            return fail(GetLastError());
+        }
+    } else if (StringCchCopyW(child_directory, ARRAYSIZE(child_directory), launcher_path) != S_OK) {
+        return fail(ERROR_BUFFER_OVERFLOW);
     }
 
     ZeroMemory(&startup_info, sizeof(startup_info));
     startup_info.cb = sizeof(startup_info);
-    socket_protocol = GetEnvironmentVariableW(
-        L"MULTISOCIAL_WORKER_PROTOCOL_HOST", NULL, 0
-    ) > 0;
     if (!socket_protocol) {
         startup_info.dwFlags = STARTF_USESTDHANDLES;
         startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -126,7 +139,7 @@ int wmain(void) {
             socket_protocol ? FALSE : TRUE,
             CREATE_NO_WINDOW,
             NULL,
-            launcher_path,
+            child_directory,
             &startup_info,
             &process_info)) {
         return fail(GetLastError());
