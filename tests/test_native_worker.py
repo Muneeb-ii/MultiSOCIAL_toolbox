@@ -122,24 +122,15 @@ time.sleep(30)
     assert list(destination.iterdir()) == [unrelated]
 
 
-def test_windows_worker_launch_does_not_show_a_console(monkeypatch):
+def test_windows_worker_launch_uses_deterministic_windowless_creation(monkeypatch):
     import native_worker_client
 
-    class StartupInfo:
-        def __init__(self):
-            self.dwFlags = 0
-            self.wShowWindow = None
-
     monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
-    monkeypatch.setattr(native_worker_client.subprocess, "STARTUPINFO", StartupInfo, raising=False)
-    monkeypatch.setattr(native_worker_client.subprocess, "STARTF_USESHOWWINDOW", 1, raising=False)
-    monkeypatch.setattr(native_worker_client.subprocess, "SW_HIDE", 0, raising=False)
+    monkeypatch.setattr(native_worker_client.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
 
     kwargs = native_worker_client._worker_popen_kwargs()
 
-    assert set(kwargs) == {"startupinfo"}
-    assert kwargs["startupinfo"].dwFlags == 1
-    assert kwargs["startupinfo"].wShowWindow == 0
+    assert kwargs == {"creationflags": 0x08000000}
 
 
 def test_windows_forced_cancellation_terminates_the_worker_process_tree(monkeypatch):
