@@ -344,8 +344,8 @@ def test_full_standard_bundle_validation_accepts_two_isolated_runtime_sets(
     )
     (worker / "MultiSOCIAL-Worker-Launcher.exe").touch()
     required_worker_files = [
-        worker / "audresample/core/bin/win_amd64/audresample.dll",
-        worker / "opensmile/core/bin/win_amd64/SMILEapi.dll",
+        worker / "Lib/site-packages/audresample/core/bin/win_amd64/audresample.dll",
+        worker / "Lib/site-packages/opensmile/core/bin/win_amd64/SMILEapi.dll",
         worker / "assets/pose_landmark_heavy.tflite",
         worker / "mediapipe/python/_framework_bindings.pyd",
         worker / "cv2/cv2.pyd",

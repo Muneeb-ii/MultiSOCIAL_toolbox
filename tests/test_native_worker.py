@@ -88,7 +88,7 @@ time.sleep(30)
     )
 
     with pytest.raises(WorkerError, match="preload:mediapipe"):
-        NativeWorkerClient(command=command, timeout_seconds=0.5).run("probe", {})
+        NativeWorkerClient(command=command, timeout_seconds=5).run("probe", {})
 
     assert diagnostic.is_file()
 

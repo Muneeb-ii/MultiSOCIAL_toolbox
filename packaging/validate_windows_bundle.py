@@ -152,8 +152,8 @@ def validate(root: Path, profile: str) -> None:
         raise RuntimeError("Worker runtime contains wxPython")
 
     required_worker_paths = [
-        "audresample/core/bin/win_amd64/audresample.dll",
-        "opensmile/core/bin/win_amd64/SMILEapi.dll",
+        "Lib/site-packages/audresample/core/bin/win_amd64/audresample.dll",
+        "Lib/site-packages/opensmile/core/bin/win_amd64/SMILEapi.dll",
         "assets/pose_landmark_heavy.tflite",
     ]
     missing = [path for path in required_worker_paths if not (worker / path).is_file()]
