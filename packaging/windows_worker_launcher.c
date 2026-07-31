@@ -67,16 +67,77 @@ static int wait_for_child(PROCESS_INFORMATION *process_info) {
     return (int)exit_code;
 }
 
+static BOOL contains_non_ascii(const WCHAR *value) {
+    while (*value != L'\0') {
+        if (*value > 0x7f) {
+            return TRUE;
+        }
+        ++value;
+    }
+    return FALSE;
+}
+
+static BOOL get_ascii_short_path(const WCHAR *source, WCHAR *destination, DWORD size) {
+    DWORD length = GetShortPathNameW(source, destination, size);
+    return length > 0 && length < size && !contains_non_ascii(destination);
+}
+
+static BOOL create_ascii_drive_alias(
+    const WCHAR *source,
+    WCHAR *alias,
+    DWORD alias_size,
+    WCHAR *target,
+    DWORD target_size
+) {
+    DWORD drives = GetLogicalDrives();
+    DWORD last_error = ERROR_BUSY;
+    WCHAR device_name[3] = {L'\0', L':', L'\0'};
+    int index;
+
+    if (drives == 0 || StringCchPrintfW(target, target_size, L"\\\\??\\%s", source) != S_OK) {
+        return FALSE;
+    }
+    for (index = 25; index >= 3; --index) {
+        if ((drives & (1u << index)) != 0) {
+            continue;
+        }
+        device_name[0] = (WCHAR)(L'A' + index);
+        if (DefineDosDeviceW(
+                DDD_RAW_TARGET_PATH | DDD_NO_BROADCAST_SYSTEM,
+                device_name,
+                target
+            )) {
+            return StringCchCopyW(alias, alias_size, device_name) == S_OK;
+        }
+        last_error = GetLastError();
+    }
+    SetLastError(last_error);
+    return FALSE;
+}
+
+static void remove_ascii_drive_alias(const WCHAR *alias, const WCHAR *target) {
+    DefineDosDeviceW(
+        DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE | DDD_NO_BROADCAST_SYSTEM,
+        alias,
+        target
+    );
+}
+
 int wmain(void) {
     WCHAR launcher_path[MAX_PATH];
     WCHAR worker_python[MAX_PATH];
     WCHAR worker_script[MAX_PATH];
     WCHAR child_directory[MAX_PATH];
+    WCHAR runtime_root[MAX_PATH];
+    WCHAR drive_alias[3] = {L'\0', L'\0', L'\0'};
+    WCHAR drive_target[MAX_PATH + 5];
     WCHAR command_line[MAX_PATH * 2 + 64];
     WCHAR *separator;
     STARTUPINFOW startup_info;
     PROCESS_INFORMATION process_info;
     BOOL socket_protocol;
+    BOOL drive_alias_created = FALSE;
+    int exit_code;
 
     if (!GetModuleFileNameW(NULL, launcher_path, ARRAYSIZE(launcher_path))) {
         return fail(GetLastError());
@@ -86,13 +147,42 @@ int wmain(void) {
         return fail(ERROR_BAD_PATHNAME);
     }
     *separator = L'\0';
-    if (StringCchPrintfW(worker_python, ARRAYSIZE(worker_python), L"%s\\%s", launcher_path, WORKER_PYTHON) != S_OK) {
+    if (contains_non_ascii(launcher_path)) {
+        if (!get_ascii_short_path(launcher_path, runtime_root, ARRAYSIZE(runtime_root))) {
+            if (!create_ascii_drive_alias(
+                    launcher_path,
+                    drive_alias,
+                    ARRAYSIZE(drive_alias),
+                    drive_target,
+                    ARRAYSIZE(drive_target)
+                )) {
+                return fail(GetLastError());
+            }
+            if (StringCchCopyW(runtime_root, ARRAYSIZE(runtime_root), drive_alias) != S_OK) {
+                remove_ascii_drive_alias(drive_alias, drive_target);
+                return fail(ERROR_BUFFER_OVERFLOW);
+            }
+            drive_alias_created = TRUE;
+        }
+    } else if (StringCchCopyW(runtime_root, ARRAYSIZE(runtime_root), launcher_path) != S_OK) {
         return fail(ERROR_BUFFER_OVERFLOW);
     }
-    if (StringCchPrintfW(worker_script, ARRAYSIZE(worker_script), L"%s\\%s", launcher_path, WORKER_SCRIPT) != S_OK) {
+    if (StringCchPrintfW(worker_python, ARRAYSIZE(worker_python), L"%s\\%s", runtime_root, WORKER_PYTHON) != S_OK) {
+        if (drive_alias_created) {
+            remove_ascii_drive_alias(drive_alias, drive_target);
+        }
+        return fail(ERROR_BUFFER_OVERFLOW);
+    }
+    if (StringCchPrintfW(worker_script, ARRAYSIZE(worker_script), L"%s\\%s", runtime_root, WORKER_SCRIPT) != S_OK) {
+        if (drive_alias_created) {
+            remove_ascii_drive_alias(drive_alias, drive_target);
+        }
         return fail(ERROR_BUFFER_OVERFLOW);
     }
     if (GetFileAttributesW(worker_python) == INVALID_FILE_ATTRIBUTES || GetFileAttributesW(worker_script) == INVALID_FILE_ATTRIBUTES) {
+        if (drive_alias_created) {
+            remove_ascii_drive_alias(drive_alias, drive_target);
+        }
         return fail(GetLastError());
     }
 
@@ -113,9 +203,15 @@ int wmain(void) {
             child_directory, ARRAYSIZE(child_directory)
         );
         if (directory_length == 0 || directory_length >= ARRAYSIZE(child_directory)) {
+            if (drive_alias_created) {
+                remove_ascii_drive_alias(drive_alias, drive_target);
+            }
             return fail(GetLastError());
         }
-    } else if (StringCchCopyW(child_directory, ARRAYSIZE(child_directory), launcher_path) != S_OK) {
+    } else if (StringCchCopyW(child_directory, ARRAYSIZE(child_directory), runtime_root) != S_OK) {
+        if (drive_alias_created) {
+            remove_ascii_drive_alias(drive_alias, drive_target);
+        }
         return fail(ERROR_BUFFER_OVERFLOW);
     }
 
@@ -129,6 +225,9 @@ int wmain(void) {
     }
     ZeroMemory(&process_info, sizeof(process_info));
     if (StringCchPrintfW(command_line, ARRAYSIZE(command_line), L"\"%s\" -I \"%s\"", worker_python, worker_script) != S_OK) {
+        if (drive_alias_created) {
+            remove_ascii_drive_alias(drive_alias, drive_target);
+        }
         return fail(ERROR_BUFFER_OVERFLOW);
     }
     if (!CreateProcessW(
@@ -142,7 +241,14 @@ int wmain(void) {
             child_directory,
             &startup_info,
             &process_info)) {
+        if (drive_alias_created) {
+            remove_ascii_drive_alias(drive_alias, drive_target);
+        }
         return fail(GetLastError());
     }
-    return wait_for_child(&process_info);
+    exit_code = wait_for_child(&process_info);
+    if (drive_alias_created) {
+        remove_ascii_drive_alias(drive_alias, drive_target);
+    }
+    return exit_code;
 }

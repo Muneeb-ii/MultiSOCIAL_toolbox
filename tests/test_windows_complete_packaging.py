@@ -146,6 +146,9 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "socket_protocol ? FALSE : TRUE" in launcher_source
     assert "GetWindowsDirectoryW" in launcher_source
     assert "child_directory" in launcher_source
+    assert "GetShortPathNameW" in launcher_source
+    assert "DefineDosDeviceW" in launcher_source
+    assert "create_ascii_drive_alias" in launcher_source
     assert "CLEAN_BOOTSTRAP_ARGUMENT" not in launcher_source
     assert "WriteFile(" in launcher_source
     launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
