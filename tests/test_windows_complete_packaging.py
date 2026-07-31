@@ -162,3 +162,12 @@ def test_worker_initializes_native_modules_before_starting_the_operation_thread(
     assert worker_source.index("_initialize_worker_operation_runtime(operation, payload)") < worker_source.index(
         "threading.Thread(target=run_operation, daemon=True).start()"
     )
+
+
+def test_windows_gui_does_not_force_gpu_configuration_into_the_private_worker():
+    app_source = (ROOT / "src" / "app.py").read_text(encoding="utf-8")
+    client_source = (ROOT / "src" / "native_worker_client.py").read_text(encoding="utf-8")
+
+    assert 'if not sys.platform.startswith("win"):' in app_source
+    assert '"CUDA_VISIBLE_DEVICES"' in client_source
+    assert '"PYTORCH_ENABLE_MPS_FALLBACK"' in client_source

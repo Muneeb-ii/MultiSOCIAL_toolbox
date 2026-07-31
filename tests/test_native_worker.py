@@ -88,7 +88,7 @@ time.sleep(30)
     )
 
     with pytest.raises(WorkerError, match="preload:mediapipe"):
-        NativeWorkerClient(command=command, timeout_seconds=0.05).run("probe", {})
+        NativeWorkerClient(command=command, timeout_seconds=0.5).run("probe", {})
 
     assert diagnostic.is_file()
 
@@ -171,6 +171,8 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     monkeypatch.setenv("SystemRoot", r"C:\Windows")
     monkeypatch.setenv("PYTHONHOME", "bad")
     monkeypatch.setenv("PYTHONPATH", "bad")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     monkeypatch.setenv("MULTISOCIAL_FFMPEG_EXE", str(gui.parent / "ffmpeg.exe"))
     for name in native_worker_client._PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES:
         monkeypatch.setenv(name, "gui-private-state")
@@ -189,6 +191,8 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     ]
     assert "PYTHONHOME" not in env
     assert "PYTHONPATH" not in env
+    for name in native_worker_client._WINDOWS_GUI_NATIVE_ENVIRONMENT_NAMES:
+        assert name not in env
     assert "MULTISOCIAL_FFMPEG_EXE" not in env
     for name in native_worker_client._PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES:
         assert name not in env
@@ -214,29 +218,17 @@ def test_worker_payload_paths_are_absolute_before_worker_cwd_changes(tmp_path, m
     ]]
 
 
-def test_packaged_windows_spawn_holds_and_restores_gui_dll_directory_for_worker_lifetime(monkeypatch):
+def test_packaged_windows_spawn_does_not_mutate_the_gui_dll_directory(monkeypatch):
     import native_worker_client
 
     sentinel = object()
-    calls = []
     monkeypatch.setattr(native_worker_client.sys, "platform", "win32")
     monkeypatch.setattr(native_worker_client.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(native_worker_client, "_windows_dll_directory", lambda: r"C:\\gui-runtime")
-    monkeypatch.setattr(
-        native_worker_client,
-        "_set_windows_dll_directory",
-        lambda directory: calls.append(directory) or True,
-    )
     monkeypatch.setattr(native_worker_client.subprocess, "Popen", lambda *args, **kwargs: sentinel)
-    monkeypatch.setattr(native_worker_client, "_WINDOWS_WORKER_DLL_LEASES", 0)
-    monkeypatch.setattr(native_worker_client, "_WINDOWS_WORKER_ORIGINAL_DLL_DIRECTORY", None)
 
-    result, release = native_worker_client._spawn_worker(["MultiSOCIAL-Worker.exe"])
+    result = native_worker_client._spawn_worker(["MultiSOCIAL-Worker.exe"])
 
     assert result is sentinel
-    assert calls == [None]
-    release()
-    assert calls == [None, r"C:\\gui-runtime"]
 
 
 def test_worker_client_preserves_a_caller_supplied_diagnostic_path(tmp_path, monkeypatch):
@@ -289,6 +281,20 @@ def test_worker_diagnostics_exclude_unapproved_detail_fields(tmp_path, monkeypat
     assert record["operation"] == "probe"
     assert "secret" not in record
     assert "path" not in record
+
+
+def test_worker_diagnostics_record_only_the_clean_native_environment_boolean(tmp_path, monkeypatch):
+    import analysis_worker
+
+    diagnostic = tmp_path / "worker.jsonl"
+    monkeypatch.setenv(analysis_worker.WORKER_DIAGNOSTIC_ENV, str(diagnostic))
+    analysis_worker._diagnostic_stage(
+        "base-loader-configured",
+        gui_native_environment_clean=True,
+    )
+
+    record = __import__("json").loads(diagnostic.read_text(encoding="utf-8"))
+    assert record["gui_native_environment_clean"] is True
 
 
 def test_worker_runtime_flags_dlls_loaded_from_gui_root(tmp_path, monkeypatch):

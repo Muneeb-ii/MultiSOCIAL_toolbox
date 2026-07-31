@@ -10,10 +10,12 @@ import os
 import sys
 import threading
 
-# Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
-# Enable MPS fallback for Mac to prevent freezes on unsupported operations
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+# These legacy settings are for the non-Windows in-process runtime. Windows
+# analysis runs in the private CPU worker, where MediaPipe GPU is unsupported.
+if not sys.platform.startswith("win"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # Enable MPS fallback for Mac to prevent freezes on unsupported operations.
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 
 # Third-party libraries (assumed pre-installed via the project package metadata)

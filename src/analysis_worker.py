@@ -29,6 +29,7 @@ from native_worker_client import (
     PROTOCOL_VERSION,
     WORKER_DIAGNOSTIC_ENV,
     WORKER_TOKEN_ENV,
+    _WINDOWS_GUI_NATIVE_ENVIRONMENT_NAMES,
     _windows_directory,
 )
 
@@ -46,7 +47,10 @@ def _diagnostic_stage(stage: str, **details: str | int | bool | None) -> None:
     destination = os.environ.get(WORKER_DIAGNOSTIC_ENV)
     if not destination:
         return
-    allowed_keys = {"platform", "architecture", "operation", "profile", "error_type"}
+    allowed_keys = {
+        "platform", "architecture", "operation", "profile", "error_type",
+        "gui_native_environment_clean",
+    }
     safe_details = {
         key: value
         for key, value in details.items()
@@ -602,6 +606,11 @@ def _configure_worker_native_loader() -> None:
         configure_windows_dll_search_path(bundle_root, include_tensor_runtime=False)
 
 
+def _has_clean_windows_worker_environment() -> bool:
+    """Return only whether GUI-specific native settings were excluded."""
+    return not any(name in os.environ for name in _WINDOWS_GUI_NATIVE_ENVIRONMENT_NAMES)
+
+
 def _enable_worker_tensor_loader() -> None:
     """Expose Torch DLLs only after MediaPipe has completed its initialization."""
     if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
@@ -649,8 +658,11 @@ def main() -> int:
     profile = payload.get("profile")
     safe_profile = profile if profile in {"standard", "complete"} else "unknown"
     _diagnostic_stage("request-received", operation=safe_operation, profile=safe_profile)
-    _diagnostic_stage("base-loader-configured")
     _configure_worker_native_loader()
+    _diagnostic_stage(
+        "base-loader-configured",
+        gui_native_environment_clean=_has_clean_windows_worker_environment(),
+    )
     try:
         with contextlib.redirect_stdout(_RedactingStream(sys.stderr, token)), contextlib.redirect_stderr(_RedactingStream(sys.stderr, token)):
             _diagnostic_stage("ffmpeg-configured")
