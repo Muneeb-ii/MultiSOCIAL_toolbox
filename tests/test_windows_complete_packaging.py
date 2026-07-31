@@ -149,6 +149,8 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "GetShortPathNameW" in launcher_source
     assert "DefineDosDeviceW" in launcher_source
     assert "create_ascii_drive_alias" in launcher_source
+    assert "MULTISOCIAL_WORKER_RUNTIME_ROOT" in launcher_source
+    assert "SetEnvironmentVariableW(WORKER_RUNTIME_ROOT_ENV, runtime_root)" in launcher_source
     assert 'L"\\\\\\\\??\\\\%s"' not in launcher_source
     assert 'L"\\\\??\\\\%s"' in launcher_source
     assert "StringCchPrintfA" in launcher_source
@@ -157,6 +159,7 @@ def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
     assert "return fail(error);" in launcher_source
     assert "CLEAN_BOOTSTRAP_ARGUMENT" not in launcher_source
     assert "WriteFile(" in launcher_source
+    assert "_PrivateWorkerSmile" in (ROOT / "src" / "audio.py").read_text(encoding="utf-8")
     launcher_builder = (ROOT / "packaging" / "build_windows_worker_launcher.py").read_text(encoding="utf-8")
     assert "/MT" in launcher_builder
     assert "def _write_build_batch(output: Path)" in launcher_builder

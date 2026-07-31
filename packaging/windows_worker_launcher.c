@@ -17,6 +17,7 @@
 #define LAUNCHER_NAME L"MultiSOCIAL-Worker-Launcher.exe"
 #define WORKER_PYTHON L"python.exe"
 #define WORKER_SCRIPT L"app\\analysis_worker.py"
+#define WORKER_RUNTIME_ROOT_ENV L"MULTISOCIAL_WORKER_RUNTIME_ROOT"
 
 static void reset_pyinstaller_environment(void) {
     const WCHAR *const names[] = {
@@ -198,6 +199,13 @@ int wmain(void) {
     socket_protocol = GetEnvironmentVariableW(
         L"MULTISOCIAL_WORKER_PROTOCOL_HOST", NULL, 0
     ) > 0;
+    if (!SetEnvironmentVariableW(WORKER_RUNTIME_ROOT_ENV, runtime_root)) {
+        error = GetLastError();
+        if (drive_alias_created) {
+            remove_ascii_drive_alias(drive_alias, drive_target);
+        }
+        return fail(error);
+    }
     /* Reset both legacy and modern process DLL-directory mechanisms. */
     SetDllDirectoryW(NULL);
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
