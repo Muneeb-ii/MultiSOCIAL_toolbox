@@ -45,10 +45,13 @@ def bundled_dll_directories(bundle_root: str, *, include_tensor_runtime: bool = 
     if include_tensor_runtime:
         relative_paths = (*relative_paths, *_TENSOR_DLL_DIRECTORY_RELATIVE_PATHS)
     for relative_path in relative_paths:
-        directory = os.path.normcase(os.path.abspath(os.path.join(bundle_root, relative_path)))
-        if directory not in seen and os.path.isdir(directory):
-            directories.append(directory)
-            seen.add(directory)
+        for prefix in ("", os.path.join("Lib", "site-packages")):
+            directory = os.path.normcase(
+                os.path.abspath(os.path.join(bundle_root, prefix, relative_path))
+            )
+            if directory not in seen and os.path.isdir(directory):
+                directories.append(directory)
+                seen.add(directory)
     return directories
 
 

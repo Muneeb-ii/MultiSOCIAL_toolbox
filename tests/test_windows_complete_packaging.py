@@ -86,14 +86,11 @@ def test_windows_specs_build_independent_gui_and_console_worker():
     worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
     workflow_source = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert 'name="MultiSOCIAL-Worker"' in worker_spec
-    assert "console=True" in worker_spec
-    assert "assert_worker_graph(a)" in worker_spec
-    assert "wx" not in worker_spec.split("hiddenimports = list", 1)[1].split("datas =", 1)[0]
     assert "assert_gui_graph(a)" in gui_spec
     assert "analysis_worker.py" not in gui_spec
     assert "Build native-free Windows GUI" in workflow_source
-    assert "Build private Windows worker in a separate process" in workflow_source
+    assert "Build private embedded Windows worker runtime" in workflow_source
+    assert "build_windows_embedded_worker.py" in workflow_source
     assert "assemble_windows.py" in workflow_source
     e2e_source = (
         ROOT / ".github" / "scripts" / "windows_packaged_e2e.py"

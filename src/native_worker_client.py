@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 PROTOCOL_VERSION = 1
 WORKER_TOKEN_ENV = "MULTISOCIAL_WORKER_HF_TOKEN"
 WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
-WORKER_EXECUTABLE_NAME = "MultiSOCIAL-Worker.exe"
+WORKER_EXECUTABLE_NAME = "python.exe"
 WORKER_LAUNCHER_NAME = "MultiSOCIAL-Worker-Launcher.exe"
 _PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES = (
     "_PYI_APPLICATION_HOME_DIR",
@@ -125,13 +125,12 @@ def _path_is_within(path: str | Path, root: str | Path) -> bool:
 
 def _worker_directory(command: list[str]) -> Path:
     executable = Path(command[0]).resolve()
-    if executable.name.casefold() in {
-        WORKER_EXECUTABLE_NAME.casefold(),
-        WORKER_LAUNCHER_NAME.casefold(),
-    }:
+    if executable.name.casefold() == WORKER_LAUNCHER_NAME.casefold():
         return executable.parent
     if len(command) > 1:
         return Path(command[1]).resolve().parent
+    if executable.name.casefold() == WORKER_EXECUTABLE_NAME.casefold():
+        return executable.parent
     return executable.parent
 
 
@@ -166,6 +165,7 @@ def _packaged_windows_environment(command: list[str], token: Optional[str]) -> d
     app_root = Path(sys.executable).resolve().parent
     worker_dir = _worker_directory(command)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    env["MULTISOCIAL_WINDOWS_EMBEDDED_WORKER"] = "1"
     # The launcher is not itself a PyInstaller executable. Remove the GUI
     # bootloader's private state before it starts the worker so the worker's
     # bootloader cannot mistake itself for a GUI subprocess.

@@ -59,11 +59,9 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert 'YOLO_AUTOINSTALL: "false"' in workflow
     assert 'YOLOv5_AUTOINSTALL: "false"' in workflow
     assert workflow.count("packaging/audit_windows_environment.py") == 3
-    assert "build_status=$?" in workflow
+    assert "Build private embedded Windows worker runtime" in workflow
+    assert "packaging/build_windows_embedded_worker.py" in workflow
     assert "packaging/windows_gui.spec" in workflow
-    assert "packaging/windows_worker.spec" in workflow
-    assert "packaging/windows_hooks/hook-torch.py" in workflow
-    assert "packaging/windows_hooks/hook-torchaudio.py" in workflow
     assert "MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny" in workflow
     assert "needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e" in workflow
     assert "windows_packaged_e2e.py" in workflow

@@ -16,7 +16,8 @@
 #include <wchar.h>
 
 #define LAUNCHER_NAME L"MultiSOCIAL-Worker-Launcher.exe"
-#define WORKER_NAME L"MultiSOCIAL-Worker.exe"
+#define WORKER_PYTHON L"python.exe"
+#define WORKER_SCRIPT L"app\\analysis_worker.py"
 
 static void reset_pyinstaller_environment(void) {
     const WCHAR *const names[] = {
@@ -45,8 +46,9 @@ static int fail(DWORD error) {
 
 int wmain(void) {
     WCHAR launcher_path[MAX_PATH];
-    WCHAR worker_path[MAX_PATH];
-    WCHAR command_line[MAX_PATH + 3];
+    WCHAR worker_python[MAX_PATH];
+    WCHAR worker_script[MAX_PATH];
+    WCHAR command_line[MAX_PATH * 2 + 6];
     WCHAR *separator;
     STARTUPINFOW startup_info;
     PROCESS_INFORMATION process_info;
@@ -60,10 +62,13 @@ int wmain(void) {
         return fail(ERROR_BAD_PATHNAME);
     }
     *separator = L'\0';
-    if (StringCchPrintfW(worker_path, ARRAYSIZE(worker_path), L"%s\\%s", launcher_path, WORKER_NAME) != S_OK) {
+    if (StringCchPrintfW(worker_python, ARRAYSIZE(worker_python), L"%s\\%s", launcher_path, WORKER_PYTHON) != S_OK) {
         return fail(ERROR_BUFFER_OVERFLOW);
     }
-    if (GetFileAttributesW(worker_path) == INVALID_FILE_ATTRIBUTES) {
+    if (StringCchPrintfW(worker_script, ARRAYSIZE(worker_script), L"%s\\%s", launcher_path, WORKER_SCRIPT) != S_OK) {
+        return fail(ERROR_BUFFER_OVERFLOW);
+    }
+    if (GetFileAttributesW(worker_python) == INVALID_FILE_ATTRIBUTES || GetFileAttributesW(worker_script) == INVALID_FILE_ATTRIBUTES) {
         return fail(GetLastError());
     }
 
@@ -83,11 +88,11 @@ int wmain(void) {
     startup_info.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
     startup_info.hStdError = GetStdHandle(STD_ERROR_HANDLE);
     ZeroMemory(&process_info, sizeof(process_info));
-    if (StringCchPrintfW(command_line, ARRAYSIZE(command_line), L"\"%s\"", worker_path) != S_OK) {
+    if (StringCchPrintfW(command_line, ARRAYSIZE(command_line), L"\"%s\" -I \"%s\"", worker_python, worker_script) != S_OK) {
         return fail(ERROR_BUFFER_OVERFLOW);
     }
     if (!CreateProcessW(
-            worker_path,
+            worker_python,
             command_line,
             NULL,
             NULL,

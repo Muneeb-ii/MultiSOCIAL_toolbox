@@ -115,7 +115,7 @@ def validate(root: Path, profile: str) -> None:
     app_name = "MultiSOCIAL-Complete" if profile == "complete" else "MultiSOCIAL-Standard"
     worker = root / "worker"
     _assert_runtime_root(root, f"{app_name}.exe", excluded=worker)
-    _assert_runtime_root(worker, "MultiSOCIAL-Worker.exe")
+    _assert_runtime_root(worker, "python.exe")
     launcher = worker / "MultiSOCIAL-Worker-Launcher.exe"
     if not launcher.is_file() or _pe_machine(launcher) != PE_MACHINE_AMD64:
         raise RuntimeError("Worker native launcher is missing or is not AMD64")
@@ -154,7 +154,7 @@ def validate(root: Path, profile: str) -> None:
     required_worker_paths = [
         "audresample/core/bin/win_amd64/audresample.dll",
         "opensmile/core/bin/win_amd64/SMILEapi.dll",
-        "mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite",
+        "assets/pose_landmark_heavy.tflite",
     ]
     missing = [path for path in required_worker_paths if not (worker / path).is_file()]
     if missing:

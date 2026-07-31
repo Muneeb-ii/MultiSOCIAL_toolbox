@@ -152,7 +152,7 @@ def test_opaque_assembly_keeps_worker_runtime_under_worker_directory(tmp_path):
     worker.mkdir()
     (gui / "MultiSOCIAL-Standard.exe").write_bytes(b"gui")
     (gui / "python310.dll").write_bytes(b"gui-python")
-    (worker / "MultiSOCIAL-Worker.exe").write_bytes(b"worker")
+    (worker / "python.exe").write_bytes(b"worker")
     (worker / "python310.dll").write_bytes(b"worker-python")
     launcher = tmp_path / "MultiSOCIAL-Worker-Launcher.exe"
     launcher.write_bytes(b"launcher")
@@ -160,9 +160,25 @@ def test_opaque_assembly_keeps_worker_runtime_under_worker_directory(tmp_path):
     assembler.assemble(gui, worker, launcher, output)
 
     assert (output / "MultiSOCIAL-Standard.exe").read_bytes() == b"gui"
-    assert (output / "worker" / "MultiSOCIAL-Worker.exe").read_bytes() == b"worker"
+    assert (output / "worker" / "python.exe").read_bytes() == b"worker"
     assert (output / "worker" / "MultiSOCIAL-Worker-Launcher.exe").read_bytes() == b"launcher"
     assert (output / "python310.dll").read_bytes() != (output / "worker" / "python310.dll").read_bytes()
+
+
+def test_windows_worker_uses_an_embedded_cpython_runtime_not_a_second_bootloader():
+    builder = (ROOT / "packaging" / "build_windows_embedded_worker.py").read_text(encoding="utf-8")
+    launcher = (ROOT / "packaging" / "windows_worker_launcher.c").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert '"Lib" / "site-packages"' in builder
+    assert "collect_vc_runtime_binaries" in builder
+    assert '"python310._pth"' in builder
+    assert 'app\\nimport site\\n' in builder
+    assert 'WORKER_PYTHON L"python.exe"' in launcher
+    assert 'WORKER_SCRIPT L"app\\\\analysis_worker.py"' in launcher
+    assert ' -I ' in launcher
+    assert "build_windows_embedded_worker.py" in workflow
+    assert "windows_worker.spec" not in workflow
 
 def test_assembly_rejects_output_that_can_delete_an_input(tmp_path):
     assembler = _load_packaging_module("assemble_windows")
@@ -322,7 +338,7 @@ def test_full_standard_bundle_validation_accepts_two_isolated_runtime_sets(
     )
     _create_runtime_root(
         worker,
-        "MultiSOCIAL-Worker.exe",
+        "python.exe",
         validator.VC_RUNTIME_NAMES,
         stable_abi=True,
     )
@@ -330,7 +346,7 @@ def test_full_standard_bundle_validation_accepts_two_isolated_runtime_sets(
     required_worker_files = [
         worker / "audresample/core/bin/win_amd64/audresample.dll",
         worker / "opensmile/core/bin/win_amd64/SMILEapi.dll",
-        worker / "mediapipe/modules/pose_landmark/pose_landmark_heavy.tflite",
+        worker / "assets/pose_landmark_heavy.tflite",
         worker / "mediapipe/python/_framework_bindings.pyd",
         worker / "cv2/cv2.pyd",
         worker / "torch/lib/torch_cpu.dll",

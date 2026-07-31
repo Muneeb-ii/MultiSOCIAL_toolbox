@@ -149,19 +149,13 @@ jobs:
           set -euo pipefail
           git ls-files --error-unmatch \
             packaging/windows_gui.spec \
-            packaging/windows_worker.spec \
-            packaging/windows_hooks/hook-pyannote.audio.py \
-            packaging/windows_hooks/hook-torch.py \
-            packaging/windows_hooks/hook-torchaudio.py \
-            packaging/windows_hooks/hook-transformers.py \
-            packaging/windows_hooks/hook-ultralytics.py \
-            packaging/windows_hooks/hook-yolov5.py \
             packaging/windows_worker_launcher.c \
             packaging/build_windows_worker_launcher.py \
+            packaging/build_windows_embedded_worker.py \
             .github/scripts/run_windows_packaged_request.py \
             .github/scripts/windows_packaged_e2e.py
           test -f packaging/windows_gui.spec
-          test -f packaging/windows_worker.spec
+          test -f packaging/build_windows_embedded_worker.py
 
       - name: Create physically separate GUI and worker environments
         shell: bash
@@ -202,23 +196,18 @@ jobs:
             --distpath ".tmp/gui-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
             packaging/windows_gui.spec
 
-      - name: Build private Windows worker in a separate process
+      - name: Build private embedded Windows worker runtime
         shell: bash
         env:
           MPLCONFIGDIR: ${{ github.workspace }}/.tmp/worker-mpl-${{ matrix.repetition }}
           PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.tmp/worker-pyi-${{ matrix.repetition }}
         run: |
           set -euo pipefail
-          set +e
-          .venv-worker/Scripts/python.exe -m PyInstaller --clean --noconfirm \
-            --workpath ".tmp/worker-work-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
-            --distpath ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
-            packaging/windows_worker.spec
-          build_status=$?
-          set -e
+          .venv-worker/Scripts/python.exe packaging/build_windows_embedded_worker.py \
+            --python .venv-worker/Scripts/python.exe \
+            --output ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/worker"
           .venv-worker/Scripts/python.exe packaging/audit_windows_environment.py \
             --kind worker --lock "requirements/locks/windows-${MULTISOCIAL_BUILD_PROFILE}-py310.txt"
-          exit "${build_status}"
 
       - name: Assemble opaque worker runtime under GUI runtime
         shell: bash
@@ -228,7 +217,7 @@ jobs:
           [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
           python packaging/assemble_windows.py \
             --gui ".tmp/gui-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/${app_name}" \
-            --worker ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/MultiSOCIAL-Worker" \
+            --worker ".tmp/worker-dist-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/worker" \
             --launcher ".tmp/worker-launcher-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}/MultiSOCIAL-Worker-Launcher.exe" \
             --output "dist/${app_name}"
           python packaging/validate_windows_bundle.py --root "dist/${app_name}" \

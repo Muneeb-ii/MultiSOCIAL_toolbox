@@ -35,6 +35,7 @@ from native_worker_client import (
 
 
 _WORKER_STARTED_AT = time.monotonic()
+_EMBEDDED_WORKER_ENV = "MULTISOCIAL_WINDOWS_EMBEDDED_WORKER"
 
 
 def _diagnostic_stage(stage: str, **details: str | int | bool | None) -> None:
@@ -170,8 +171,11 @@ def _worker_runtime_diagnostics() -> dict[str, Any]:
             except OSError:
                 continue
             binding_hashes.append({"name": binding.name, "sha256": digest})
+    embedded = os.environ.get(_EMBEDDED_WORKER_ENV) == "1"
     return {
-        "private_runtime": executable_dir.name.casefold() == "worker" and bundle_root == executable_dir,
+        "private_runtime": executable_dir.name.casefold() == "worker" and (
+            bundle_root == executable_dir or embedded
+        ),
         "mediapipe_bindings": binding_hashes,
         "loaded_module_violations": _loaded_module_violations(bundle_root),
         "native_module_violations": _native_module_violations(bundle_root),
@@ -244,7 +248,10 @@ def _loaded_module_violations(
     loaded_paths: list[Path] | None = None,
 ) -> list[str]:
     """Return DLLs loaded from the containing GUI runtime instead of worker/."""
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+    if sys.platform != "win32" or (
+        not getattr(sys, "frozen", False)
+        and os.environ.get(_EMBEDDED_WORKER_ENV) != "1"
+    ):
         return []
     app_root = bundle_root.parent
     violations = []
@@ -260,7 +267,10 @@ def _native_module_violations(
     loaded_paths: list[Path] | None = None,
 ) -> list[str]:
     """Return package-native extensions or DLLs resolved outside worker/."""
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+    if sys.platform != "win32" or (
+        not getattr(sys, "frozen", False)
+        and os.environ.get(_EMBEDDED_WORKER_ENV) != "1"
+    ):
         return []
     native_markers = (
         "_framework_bindings",
@@ -301,7 +311,10 @@ def _external_module_violations(
     loaded_paths: list[Path] | None = None,
 ) -> list[str]:
     """Reject non-system DLL injection without returning user-specific paths."""
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+    if sys.platform != "win32" or (
+        not getattr(sys, "frozen", False)
+        and os.environ.get(_EMBEDDED_WORKER_ENV) != "1"
+    ):
         return []
     allowed_roots = [bundle_root, *_permitted_external_module_roots()]
     paths = loaded_paths if loaded_paths is not None else _loaded_windows_module_paths()
@@ -331,11 +344,12 @@ def _operation_module_names(operation: str, payload: dict[str, Any]) -> tuple[st
 
 def _validate_worker_runtime_provenance(operation: str, payload: dict[str, Any]) -> None:
     """Fail closed if a frozen worker resolved native state outside worker/."""
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+    embedded = os.environ.get(_EMBEDDED_WORKER_ENV) == "1"
+    if sys.platform != "win32" or (not getattr(sys, "frozen", False) and not embedded):
         return
 
     executable_dir = Path(sys.executable).resolve().parent
-    bundle_root = Path(getattr(sys, "_MEIPASS", executable_dir)).resolve()
+    bundle_root = executable_dir if embedded else Path(getattr(sys, "_MEIPASS", executable_dir)).resolve()
     if executable_dir.name.casefold() != "worker" or bundle_root != executable_dir:
         raise RuntimeError("Worker executable and bundle root are not the private worker runtime")
 
@@ -602,6 +616,8 @@ def _configure_worker_native_loader() -> None:
     from runtime_hook_dlls import configure_windows_dll_search_path
 
     bundle_root = getattr(sys, "_MEIPASS", None)
+    if not bundle_root and os.environ.get(_EMBEDDED_WORKER_ENV) == "1":
+        bundle_root = str(Path(sys.executable).resolve().parent)
     if bundle_root and os.path.isdir(bundle_root):
         configure_windows_dll_search_path(bundle_root, include_tensor_runtime=False)
 
@@ -618,6 +634,8 @@ def _enable_worker_tensor_loader() -> None:
     from runtime_hook_dlls import configure_windows_dll_search_path
 
     bundle_root = getattr(sys, "_MEIPASS", None)
+    if not bundle_root and os.environ.get(_EMBEDDED_WORKER_ENV) == "1":
+        bundle_root = str(Path(sys.executable).resolve().parent)
     if bundle_root and os.path.isdir(bundle_root):
         configure_windows_dll_search_path(bundle_root, include_tensor_runtime=True)
 
