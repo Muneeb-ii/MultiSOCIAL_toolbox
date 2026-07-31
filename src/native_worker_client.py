@@ -24,6 +24,9 @@ from typing import Any, Callable, Optional
 PROTOCOL_VERSION = 1
 WORKER_TOKEN_ENV = "MULTISOCIAL_WORKER_HF_TOKEN"
 WORKER_DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
+# Opt-in CI-only switch. Normal application launches always remove the
+# short-lived diagnostic file once a request completes successfully.
+WORKER_PRESERVE_DIAGNOSTICS_ENV = "MULTISOCIAL_PRESERVE_WORKER_DIAGNOSTICS"
 WORKER_EXECUTABLE_NAME = "python.exe"
 WORKER_LAUNCHER_NAME = "MultiSOCIAL-Worker-Launcher.exe"
 _PYINSTALLER_PRIVATE_ENVIRONMENT_NAMES = (
@@ -417,7 +420,10 @@ class NativeWorkerClient:
                 except subprocess.TimeoutExpired:
                     process.kill()
             _cleanup_request_staging(payload, request_id)
-            if completed_successfully:
+            if (
+                completed_successfully
+                and env.get(WORKER_PRESERVE_DIAGNOSTICS_ENV) != "1"
+            ):
                 diagnostic_path.unlink(missing_ok=True)
 
 

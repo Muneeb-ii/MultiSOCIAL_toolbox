@@ -239,6 +239,21 @@ jobs:
             --result "${workspace}/result.json" \
             --timeout 60
 
+      - name: Measure cold packaged GUI-to-worker MediaPipe startup
+        if: matrix.profile == 'standard' && matrix.repetition == 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace=".tmp/gui-worker-cold-startup"
+          mkdir -p "${workspace}"
+          printf '{"operation":"probe","payload":{"profile":"standard"},"timeout_seconds":300}\n' > "${workspace}/request.json"
+          python .github/scripts/run_windows_packaged_request.py \
+            --gui "dist/MultiSOCIAL-Standard/MultiSOCIAL-Standard.exe" \
+            --request "${workspace}/request.json" \
+            --result "${workspace}/result.json" \
+            --timeout 315 \
+            --preserve-diagnostics
+
       - name: Diagnose packaged GUI-to-worker probe
         shell: bash
         run: |

@@ -67,6 +67,9 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "windows_packaged_e2e.py" in workflow
     assert "Diagnose direct native launcher-to-worker probe" in workflow
     assert "Diagnose packaged GUI-to-worker probe" in workflow
+    assert "Measure cold packaged GUI-to-worker MediaPipe startup" in workflow
+    assert '"timeout_seconds":300' in workflow
+    assert "--preserve-diagnostics" in workflow
     assert "Diagnose relocated native launcher-to-worker probe" in workflow
     assert "--worker \"dist/${app_name}/worker/MultiSOCIAL-Worker-Launcher.exe\"" in workflow
     assert "--timeout 60" in workflow

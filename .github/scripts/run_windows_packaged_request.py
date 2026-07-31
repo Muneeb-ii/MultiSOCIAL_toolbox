@@ -14,6 +14,7 @@ from pathlib import Path
 
 PROTOCOL_VERSION = 1
 DIAGNOSTIC_ENV = "MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"
+PRESERVE_DIAGNOSTICS_ENV = "MULTISOCIAL_PRESERVE_WORKER_DIAGNOSTICS"
 
 
 def _diagnostic_stages(path: Path) -> str:
@@ -30,6 +31,27 @@ def _diagnostic_stages(path: Path) -> str:
         if isinstance(stage, str) and stage:
             stages.append(stage)
     return " -> ".join(stages[-12:]) or "no worker stage recorded"
+
+
+def _diagnostic_timeline(path: Path) -> list[dict[str, int | str]]:
+    """Return only redacted stage names and monotonic elapsed times for CI."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    timeline: list[dict[str, int | str]] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        stage = event.get("stage")
+        elapsed_ms = event.get("elapsed_ms")
+        if isinstance(stage, str) and stage and isinstance(elapsed_ms, int):
+            timeline.append({"stage": stage, "elapsed_ms": elapsed_ms})
+    return timeline[-12:]
 
 
 def _terminate_tree(process: subprocess.Popen) -> None:
@@ -117,6 +139,7 @@ def run_worker_request(
     result: Path,
     *,
     timeout: int = 60,
+    preserve_diagnostics: bool = False,
 ) -> dict:
     """Probe the worker directly, before introducing GUI launch state."""
     worker = worker.resolve()
@@ -136,6 +159,11 @@ def run_worker_request(
         "operation": str(value["operation"]),
         "payload": dict(value.get("payload") or {}),
     }
+    environment = _private_worker_environment(worker, diagnostic_path)
+    if preserve_diagnostics:
+        environment[PRESERVE_DIAGNOSTICS_ENV] = "1"
+    else:
+        environment.pop(PRESERVE_DIAGNOSTICS_ENV, None)
     process = subprocess.Popen(
         [str(worker)],
         stdin=subprocess.PIPE,
@@ -145,7 +173,7 @@ def run_worker_request(
         encoding="utf-8",
         errors="replace",
         cwd=str(worker.parent),
-        env=_private_worker_environment(worker, diagnostic_path),
+        env=environment,
     )
     stdout, _stderr = _communicate_bounded(
         process,
@@ -168,6 +196,8 @@ def run_worker_request(
             f"{_safe_protocol_error(response)}"
         )
     output = {"ok": True, "result": dict(response.get("result") or {})}
+    if preserve_diagnostics:
+        output["worker_diagnostics"] = _diagnostic_timeline(diagnostic_path)
     _write_result(result, output)
     return output
 
@@ -179,6 +209,7 @@ def run_request(
     *,
     verify_heavy_pose_asset: bool = False,
     timeout: int = 1200,
+    preserve_diagnostics: bool = False,
 ) -> dict:
     gui = gui.resolve()
     request = request.resolve()
@@ -194,6 +225,10 @@ def run_request(
     environment["MULTISOCIAL_WORKER_SMOKE_REQUEST"] = str(request)
     environment["MULTISOCIAL_WORKER_SMOKE_RESULT"] = str(result)
     environment[DIAGNOSTIC_ENV] = str(diagnostic_path)
+    if preserve_diagnostics:
+        environment[PRESERVE_DIAGNOSTICS_ENV] = "1"
+    else:
+        environment.pop(PRESERVE_DIAGNOSTICS_ENV, None)
     if verify_heavy_pose_asset:
         environment["MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET"] = "1"
 
@@ -225,6 +260,10 @@ def run_request(
             f"at stages: {_diagnostic_stages(diagnostic_path)}: "
             f"{response.get('error', response)!s}"
         )
+    if preserve_diagnostics:
+        output = dict(response)
+        output["worker_diagnostics"] = _diagnostic_timeline(diagnostic_path)
+        return output
     return response
 
 
@@ -236,11 +275,18 @@ def main() -> None:
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--verify-heavy-pose-asset", action="store_true")
+    parser.add_argument("--preserve-diagnostics", action="store_true")
     parser.add_argument("--timeout", type=int, default=1200)
     args = parser.parse_args()
 
     if args.worker:
-        response = run_worker_request(args.worker, args.request, args.result, timeout=args.timeout)
+        response = run_worker_request(
+            args.worker,
+            args.request,
+            args.result,
+            timeout=args.timeout,
+            preserve_diagnostics=args.preserve_diagnostics,
+        )
     else:
         response = run_request(
             args.gui,
@@ -248,6 +294,7 @@ def main() -> None:
             args.result,
             verify_heavy_pose_asset=args.verify_heavy_pose_asset,
             timeout=args.timeout,
+            preserve_diagnostics=args.preserve_diagnostics,
         )
     print(json.dumps(response, ensure_ascii=False))
 

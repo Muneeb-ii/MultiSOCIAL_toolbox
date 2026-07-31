@@ -267,6 +267,28 @@ print(json.dumps({"protocol": 1, "id": request["id"], "event": "result", "result
     assert not diagnostic.exists()
 
 
+def test_worker_client_can_preserve_successful_diagnostics_for_ci(tmp_path, monkeypatch):
+    import native_worker_client
+    from native_worker_client import NativeWorkerClient
+
+    diagnostic = tmp_path / "caller-diagnostic.jsonl"
+    command = _worker_script(
+        tmp_path,
+        """import json, os, sys
+request = json.loads(sys.stdin.readline())
+with open(os.environ["MULTISOCIAL_WORKER_DIAGNOSTIC_PATH"], "w", encoding="utf-8") as output:
+    output.write('{"stage":"result-emitted","elapsed_ms":123}\\n')
+print(json.dumps({"protocol": 1, "id": request["id"], "event": "result", "result": {}}), flush=True)
+""",
+    )
+    monkeypatch.setenv(native_worker_client.WORKER_DIAGNOSTIC_ENV, str(diagnostic))
+    monkeypatch.setenv(native_worker_client.WORKER_PRESERVE_DIAGNOSTICS_ENV, "1")
+
+    NativeWorkerClient(command=command).run("probe", {})
+
+    assert diagnostic.read_text(encoding="utf-8") == '{"stage":"result-emitted","elapsed_ms":123}\n'
+
+
 def test_worker_probe_metadata_reports_the_current_architecture():
     from analysis_worker import _runtime_metadata
 
