@@ -206,7 +206,7 @@ def test_runtime_root_rejects_nested_python_dll(tmp_path, monkeypatch):
     for name in validator.VC_RUNTIME_NAMES:
         (root / name).touch()
 
-    with pytest.raises(RuntimeError, match="nested Python/VC runtime"):
+    with pytest.raises(RuntimeError, match="nested Python runtime"):
         validator._assert_runtime_root(root, "app.exe")
 
 
@@ -315,7 +315,7 @@ def test_runtime_root_rejects_nested_stable_abi_python_dll(tmp_path, monkeypatch
     for name in validator.VC_RUNTIME_NAMES:
         (root / name).touch()
 
-    with pytest.raises(RuntimeError, match=r"nested Python/VC runtime.*python3\.dll"):
+    with pytest.raises(RuntimeError, match=r"nested Python runtime.*python3\.dll"):
         validator._assert_runtime_root(root, "app.exe")
 
 
@@ -356,6 +356,19 @@ def test_full_standard_bundle_validation_accepts_two_isolated_runtime_sets(
         path.touch()
 
     validator.validate(root, "standard")
+
+
+def test_runtime_root_allows_package_private_vc_runtime_files(tmp_path, monkeypatch):
+    validator = _load_packaging_module("validate_windows_bundle")
+    monkeypatch.setattr(validator, "_pe_machine", lambda _path: validator.PE_MACHINE_AMD64)
+    root = tmp_path / "runtime"
+    _create_runtime_root(root, "app.exe", validator.VC_RUNTIME_NAMES)
+    for name in ("msvcp140.dll", "vcomp140.dll"):
+        path = root / "Lib/site-packages/sklearn/.libs" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+    validator._assert_runtime_root(root, "app.exe")
 
 
 def test_standard_bundle_validator_ignores_optional_stubs_and_build_hook_names(

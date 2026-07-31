@@ -90,20 +90,17 @@ def _assert_runtime_root(root: Path, executable: str, excluded: Path | None = No
         raise RuntimeError(
             f"Runtime contains non-AMD64 PE files at {root}: {', '.join(wrong_architecture)}"
         )
-    duplicates = [
+    nested_python_dlls = [
         path.relative_to(root)
         for path in _runtime_files(root, excluded)
-        if (
-            path.name.casefold() in VC_RUNTIME_NAMES
-            or (
-                path.name.casefold().startswith(PYTHON_DLL_PREFIX)
-                and path.suffix.casefold() == ".dll"
-            )
-        )
+        if path.name.casefold().startswith(PYTHON_DLL_PREFIX)
+        and path.suffix.casefold() == ".dll"
         and path.parent != root
     ]
-    if duplicates:
-        raise RuntimeError(f"Duplicate nested Python/VC runtime files under {root}: {duplicates[:10]}")
+    if nested_python_dlls:
+        raise RuntimeError(
+            f"Duplicate nested Python runtime files under {root}: {nested_python_dlls[:10]}"
+        )
 
 def _path_has_marker(path: Path, markers: set[str]) -> bool:
     parts = {part.casefold() for part in path.parts}

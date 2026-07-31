@@ -95,9 +95,7 @@ class WindowsWorkerBackend:
                 model = (
                     Path(sys.executable).resolve().parent
                     / "worker"
-                    / "mediapipe"
-                    / "modules"
-                    / "pose_landmark"
+                    / "assets"
                     / "pose_landmark_heavy.tflite"
                 )
             else:

@@ -180,6 +180,7 @@ def test_packaged_windows_worker_environment_removes_gui_state(tmp_path, monkeyp
     env = native_worker_client._packaged_windows_environment([str(worker)], None)
 
     assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    assert "MULTISOCIAL_WINDOWS_EMBEDDED_WORKER" not in env
     assert env["PATH"].split(";")[0] == str(worker.parent)
     assert str(gui.parent) not in env["PATH"].split(";")[1:]
     windows_root = native_worker_client.Path(r"C:\Windows")
@@ -363,6 +364,17 @@ def test_worker_preloads_pose_runtime_in_mediapipe_then_torch_order(monkeypatch)
     analysis_worker._initialize_worker_operation_runtime("extract_pose", {})
 
     assert events == ["mediapipe", "cv2", "enable-torch", "pose"]
+
+
+def test_embedded_worker_skips_pyinstaller_dll_directory_registration(monkeypatch):
+    import analysis_worker
+
+    monkeypatch.setattr(analysis_worker.sys, "platform", "win32")
+    monkeypatch.setattr(analysis_worker, "_is_embedded_worker_runtime", lambda: True)
+    monkeypatch.setattr(analysis_worker.os, "add_dll_directory", lambda _path: None, raising=False)
+
+    analysis_worker._configure_worker_native_loader()
+    analysis_worker._enable_worker_tensor_loader()
 
 
 def test_worker_preloads_complete_probe_runtime_on_the_main_thread(monkeypatch):

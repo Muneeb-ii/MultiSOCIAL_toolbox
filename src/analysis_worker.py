@@ -35,7 +35,26 @@ from native_worker_client import (
 
 
 _WORKER_STARTED_AT = time.monotonic()
-_EMBEDDED_WORKER_ENV = "MULTISOCIAL_WINDOWS_EMBEDDED_WORKER"
+
+
+def _is_embedded_worker_runtime() -> bool:
+    """Identify the private CPython worker by its on-disk runtime layout.
+
+    The GUI must not pass a mode flag that changes loader behavior.  The worker
+    itself is authoritative: its executable lives in ``worker/`` beside a
+    versioned ``python*._pth`` file written by the packager.
+    """
+
+    executable_dir = Path(sys.executable).resolve().parent
+    return executable_dir.name.casefold() == "worker" and any(
+        executable_dir.glob("python*._pth")
+    )
+
+
+def _uses_private_worker_runtime() -> bool:
+    """Return whether this is either supported private-worker packaging form."""
+
+    return bool(getattr(sys, "frozen", False)) or _is_embedded_worker_runtime()
 
 
 def _diagnostic_stage(stage: str, **details: str | int | bool | None) -> None:
@@ -171,7 +190,7 @@ def _worker_runtime_diagnostics() -> dict[str, Any]:
             except OSError:
                 continue
             binding_hashes.append({"name": binding.name, "sha256": digest})
-    embedded = os.environ.get(_EMBEDDED_WORKER_ENV) == "1"
+    embedded = _is_embedded_worker_runtime()
     return {
         "private_runtime": executable_dir.name.casefold() == "worker" and (
             bundle_root == executable_dir or embedded
@@ -248,10 +267,7 @@ def _loaded_module_violations(
     loaded_paths: list[Path] | None = None,
 ) -> list[str]:
     """Return DLLs loaded from the containing GUI runtime instead of worker/."""
-    if sys.platform != "win32" or (
-        not getattr(sys, "frozen", False)
-        and os.environ.get(_EMBEDDED_WORKER_ENV) != "1"
-    ):
+    if sys.platform != "win32" or not _uses_private_worker_runtime():
         return []
     app_root = bundle_root.parent
     violations = []
@@ -267,10 +283,7 @@ def _native_module_violations(
     loaded_paths: list[Path] | None = None,
 ) -> list[str]:
     """Return package-native extensions or DLLs resolved outside worker/."""
-    if sys.platform != "win32" or (
-        not getattr(sys, "frozen", False)
-        and os.environ.get(_EMBEDDED_WORKER_ENV) != "1"
-    ):
+    if sys.platform != "win32" or not _uses_private_worker_runtime():
         return []
     native_markers = (
         "_framework_bindings",
@@ -311,10 +324,7 @@ def _external_module_violations(
     loaded_paths: list[Path] | None = None,
 ) -> list[str]:
     """Reject non-system DLL injection without returning user-specific paths."""
-    if sys.platform != "win32" or (
-        not getattr(sys, "frozen", False)
-        and os.environ.get(_EMBEDDED_WORKER_ENV) != "1"
-    ):
+    if sys.platform != "win32" or not _uses_private_worker_runtime():
         return []
     allowed_roots = [bundle_root, *_permitted_external_module_roots()]
     paths = loaded_paths if loaded_paths is not None else _loaded_windows_module_paths()
@@ -344,8 +354,8 @@ def _operation_module_names(operation: str, payload: dict[str, Any]) -> tuple[st
 
 def _validate_worker_runtime_provenance(operation: str, payload: dict[str, Any]) -> None:
     """Fail closed if a frozen worker resolved native state outside worker/."""
-    embedded = os.environ.get(_EMBEDDED_WORKER_ENV) == "1"
-    if sys.platform != "win32" or (not getattr(sys, "frozen", False) and not embedded):
+    embedded = _is_embedded_worker_runtime()
+    if sys.platform != "win32" or not _uses_private_worker_runtime():
         return
 
     executable_dir = Path(sys.executable).resolve().parent
@@ -606,18 +616,19 @@ def _configure_worker_native_loader() -> None:
     """Install the MediaPipe-safe DLL phase after the worker—not wx—has started."""
     if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
         return
-    # PyInstaller's Windows bootloader configures a process-wide DLL directory.
-    # Clear any inherited GUI directory in the process that will actually import
-    # MediaPipe, then register only the private worker locations below.
+    # Clear any inherited GUI directory in the process that will actually
+    # import MediaPipe. The embedded CPython worker relies on its own app
+    # directory and package-local dependency layout; adding every old
+    # PyInstaller directory makes dependency lookup order unspecified.
     try:
         ctypes.windll.kernel32.SetDllDirectoryW(None)
     except (AttributeError, OSError):
         pass
+    if _is_embedded_worker_runtime():
+        return
     from runtime_hook_dlls import configure_windows_dll_search_path
 
     bundle_root = getattr(sys, "_MEIPASS", None)
-    if not bundle_root and os.environ.get(_EMBEDDED_WORKER_ENV) == "1":
-        bundle_root = str(Path(sys.executable).resolve().parent)
     if bundle_root and os.path.isdir(bundle_root):
         configure_windows_dll_search_path(bundle_root, include_tensor_runtime=False)
 
@@ -631,11 +642,11 @@ def _enable_worker_tensor_loader() -> None:
     """Expose Torch DLLs only after MediaPipe has completed its initialization."""
     if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
         return
+    if _is_embedded_worker_runtime():
+        return
     from runtime_hook_dlls import configure_windows_dll_search_path
 
     bundle_root = getattr(sys, "_MEIPASS", None)
-    if not bundle_root and os.environ.get(_EMBEDDED_WORKER_ENV) == "1":
-        bundle_root = str(Path(sys.executable).resolve().parent)
     if bundle_root and os.path.isdir(bundle_root):
         configure_windows_dll_search_path(bundle_root, include_tensor_runtime=True)
 

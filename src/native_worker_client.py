@@ -165,7 +165,6 @@ def _packaged_windows_environment(command: list[str], token: Optional[str]) -> d
     app_root = Path(sys.executable).resolve().parent
     worker_dir = _worker_directory(command)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    env["MULTISOCIAL_WINDOWS_EMBEDDED_WORKER"] = "1"
     # The launcher is not itself a PyInstaller executable. Remove the GUI
     # bootloader's private state before it starts the worker so the worker's
     # bootloader cannot mistake itself for a GUI subprocess.

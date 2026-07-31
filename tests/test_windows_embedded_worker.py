@@ -24,3 +24,9 @@ def test_embedded_worker_excludes_pyinstaller_build_tools():
     assert '"_pyinstaller_hooks_contrib"' in builder
     assert '"pyinstaller-"' in builder
     assert "ignore=_ignore_build_only_worker_files" in builder
+
+
+def test_gui_heavy_pose_smoke_uses_the_embedded_worker_asset_path():
+    backend = (ROOT / "src" / "worker_backend.py").read_text(encoding="utf-8")
+
+    assert ' / "worker"\n                    / "assets"\n                    / "pose_landmark_heavy.tflite"' in backend
