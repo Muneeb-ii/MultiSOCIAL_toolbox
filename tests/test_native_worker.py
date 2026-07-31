@@ -520,6 +520,19 @@ def test_worker_runtime_rejects_all_non_system_external_modules(tmp_path, monkey
     assert analysis_worker._external_module_violations(worker_root, loaded) == ["injected.dll"]
 
 
+def test_worker_path_containment_resolves_an_alias_before_provenance_checks(tmp_path):
+    import analysis_worker
+
+    worker_root = tmp_path / "Unicode worker"
+    module = worker_root / "Lib" / "site-packages" / "mediapipe" / "__init__.py"
+    module.parent.mkdir(parents=True)
+    module.touch()
+    alias = tmp_path / "worker-alias"
+    alias.symlink_to(worker_root, target_is_directory=True)
+
+    assert analysis_worker._path_is_within(alias / "Lib" / "site-packages" / "mediapipe" / "__init__.py", worker_root)
+
+
 def test_worker_preloads_pose_runtime_in_mediapipe_then_torch_order(monkeypatch):
     import analysis_worker
 

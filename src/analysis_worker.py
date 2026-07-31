@@ -230,9 +230,20 @@ def _worker_runtime_diagnostics() -> dict[str, Any]:
 
 
 def _path_is_within(path: str | Path, root: str | Path) -> bool:
+    """Compare canonical paths so a private Windows drive alias remains private.
+
+    The native launcher may expose ``worker/`` through a process-local ASCII
+    drive alias when the real installation path contains non-ASCII characters.
+    Windows resolves that alias to its target for imported module paths.  A
+    lexical comparison would therefore reject worker-owned modules solely
+    because one spelling uses the alias and the other uses the final path.
+    ``Path.resolve`` uses Windows' final-path resolution for existing files,
+    while preserving the same strict containment check for genuinely external
+    modules.
+    """
     try:
-        Path(os.path.normcase(os.path.abspath(path))).relative_to(
-            Path(os.path.normcase(os.path.abspath(root)))
+        Path(os.path.normcase(os.path.abspath(path))).resolve().relative_to(
+            Path(os.path.normcase(os.path.abspath(root))).resolve()
         )
         return True
     except (OSError, ValueError):
