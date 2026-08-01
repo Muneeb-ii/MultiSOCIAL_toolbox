@@ -19,6 +19,7 @@ from scipy.optimize import linear_sum_assignment
 from yolov5 import YOLOv5
 
 import runtime_services
+from atomic_outputs import OutputStaging
 
 
 def _is_valid_weights_file(path):
@@ -805,21 +806,24 @@ class PoseProcessor:
         base_filename = os.path.splitext(os.path.basename(video_path))[0] + suffix
         
         
-        # Save separate CSV for each person
-        for person_id, keypoints in keypoints_by_person.items():
-            df = pd.DataFrame(keypoints, columns=columns)
-            filename = f"{base_filename}_ID_{int(person_id)}.csv"
-            csv_path = os.path.join(self.output_csv_folder, filename)
-            df.to_csv(csv_path, index=False)
+        # Do not expose an incomplete set of person CSVs when writing fails or
+        # the GUI cancels a run. The Windows worker adds an outer transaction;
+        # this inner transaction gives in-process macOS the same contract.
+        transaction = OutputStaging(self.output_csv_folder)
+        with transaction as staged:
+            for person_id, keypoints in keypoints_by_person.items():
+                df = pd.DataFrame(keypoints, columns=columns)
+                filename = f"{base_filename}_ID_{int(person_id)}.csv"
+                df.to_csv(staged / filename, index=False)
 
-        # Record the frame_stride used so embed can map CSV processed-frame
-        # indices back to source frames without assuming the embed-time stride.
-        try:
-            meta_path = os.path.join(self.output_csv_folder, f"{base_filename}_meta.json")
-            with open(meta_path, "w") as f:
-                json.dump({"frame_stride": self.frame_stride}, f)
-        except Exception:
-            pass
+            # Record the frame_stride used so embed can map CSV processed-frame
+            # indices back to source frames without assuming the embed-time stride.
+            try:
+                with (staged / f"{base_filename}_meta.json").open("w") as output:
+                    json.dump({"frame_stride": self.frame_stride}, output)
+            except Exception:
+                pass
+            transaction.commit()
 
         return True
 
@@ -863,76 +867,80 @@ class PoseProcessor:
         base = os.path.splitext(os.path.basename(video_path))[0]
         suffix = "_multi" if is_multi else ""
         filename = f"{base}{suffix}_pose.mp4"
-        out_path = os.path.join(self.output_video_folder, filename)
+        final_path = os.path.join(self.output_video_folder, filename)
         proc_w, proc_h = orig_w, orig_h
         if fps <= 0 or fps > 120:
             fps = 25
 
-        out = None
-        codecs_to_try = [
-            ('avc1', 'H.264 (recommended for macOS)'),
-            ('mp4v', 'MPEG-4'),
-            ('XVID', 'Xvid'),
-            ('MJPG', 'Motion JPEG'),
-        ]
+        transaction = OutputStaging(self.output_video_folder)
+        with transaction as staged:
+            out_path = str(staged / filename)
+            out = None
+            codecs_to_try = [
+                ('avc1', 'H.264 (recommended for macOS)'),
+                ('mp4v', 'MPEG-4'),
+                ('XVID', 'Xvid'),
+                ('MJPG', 'Motion JPEG'),
+            ]
 
-        for fourcc_str, desc in codecs_to_try:
-            try:
-                fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
-                test_writer = cv2.VideoWriter(out_path, fourcc, fps, (proc_w, proc_h))
-                if test_writer.isOpened():
-                    out = test_writer
-                    if self.status_callback:
-                        self.status_callback(f"✓ Using codec: {desc}")
+            for fourcc_str, desc in codecs_to_try:
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+                    test_writer = cv2.VideoWriter(out_path, fourcc, fps, (proc_w, proc_h))
+                    if test_writer.isOpened():
+                        out = test_writer
+                        if self.status_callback:
+                            self.status_callback(f"✓ Using codec: {desc}")
+                        break
+                    test_writer.release()
+                except Exception:
+                    pass
+
+            if out is None or not out.isOpened():
+                error_msg = f"❌ Failed to create video writer for {final_path}. All codecs failed."
+                if self.status_callback:
+                    self.status_callback(error_msg)
+                raise RuntimeError(error_msg)
+
+            raw_frame_idx = 0
+            cached_draws = []
+            last_progress_percent = -1
+
+            while cap.isOpened():
+                if cancel_check and cancel_check():
+                    cancelled = True
                     break
-                test_writer.release()
-            except Exception:
-                pass
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-        if out is None or not out.isOpened():
-            error_msg = f"❌ Failed to create video writer for {out_path}. All codecs failed."
-            if self.status_callback:
-                self.status_callback(error_msg)
-            raise RuntimeError(error_msg)
+                canvas = frame.copy()
 
-        raw_frame_idx = 0
-        cached_draws = []
-        last_progress_percent = -1
+                if raw_frame_idx % stride == 0:
+                    proc_idx = raw_frame_idx // stride
+                    # Landmarks are precomputed at load; just pick this frame's rows
+                    # (carried over on stride-skipped frames to avoid flicker).
+                    cached_draws = frames.get(proc_idx, [])
 
-        while cap.isOpened():
-            if cancel_check and cancel_check():
-                cancelled = True
-                break
-            ret, frame = cap.read()
-            if not ret:
-                break
+                for pid, pts in cached_draws:
+                    self._draw_pose(canvas, pts, self._color_for_id(pid))
 
-            canvas = frame.copy()
+                self._draw_legend(canvas, sorted_ids)
+                safe_frame = _sanitize_frame_for_video(canvas, (proc_w, proc_h))
+                out.write(safe_frame)
 
-            if raw_frame_idx % stride == 0:
-                proc_idx = raw_frame_idx // stride
-                # Landmarks are precomputed at load; just pick this frame's rows
-                # (carried over on stride-skipped frames to avoid flicker).
-                cached_draws = frames.get(proc_idx, [])
+                raw_frame_idx += 1
+                if progress_callback and total_frames > 0:
+                    progress_percent = int((raw_frame_idx / total_frames) * 100)
+                    if progress_percent != last_progress_percent or _should_emit_frame_update(raw_frame_idx, total_frames):
+                        progress_callback(progress_percent)
+                        last_progress_percent = progress_percent
 
-            for pid, pts in cached_draws:
-                self._draw_pose(canvas, pts, self._color_for_id(pid))
-
-            self._draw_legend(canvas, sorted_ids)
-            safe_frame = _sanitize_frame_for_video(canvas, (proc_w, proc_h))
-            out.write(safe_frame)
-
-            raw_frame_idx += 1
-            if progress_callback and total_frames > 0:
-                progress_percent = int((raw_frame_idx / total_frames) * 100)
-                if progress_percent != last_progress_percent or _should_emit_frame_update(raw_frame_idx, total_frames):
-                    progress_callback(progress_percent)
-                    last_progress_percent = progress_percent
-
-        cap.release()
-        out.release()
-        if cancelled:
-            return False
-        # OpenCV writes video only; bring the original audio over.
-        _mux_audio_into_video(out_path, video_path, self.status_callback)
-        return out_path
+            cap.release()
+            out.release()
+            if cancelled:
+                return False
+            # OpenCV writes video only; bring the original audio over.
+            _mux_audio_into_video(out_path, video_path, self.status_callback)
+            transaction.commit()
+        return final_path

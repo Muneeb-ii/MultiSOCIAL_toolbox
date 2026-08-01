@@ -61,12 +61,11 @@ def find_pose_csv_paths(output_csv_folder: str, video_path: str, multi_person: O
     """Native-import-free equivalent of ``pose.find_pose_csv_paths``."""
     base = os.path.splitext(os.path.basename(video_path))[0]
     if multi_person is True:
-        pattern = f"{base}_multi_ID_*.csv"
-    elif multi_person is False:
-        pattern = f"{base}_ID_*.csv"
-    else:
-        pattern = f"{base}*_ID_*.csv"
-    return sorted(glob.glob(os.path.join(output_csv_folder, pattern)))
+        return sorted(glob.glob(os.path.join(output_csv_folder, f"{base}_multi_ID_*.csv")))
+    if multi_person is False:
+        return sorted(glob.glob(os.path.join(output_csv_folder, f"{base}_ID_*.csv")))
+    multi = sorted(glob.glob(os.path.join(output_csv_folder, f"{base}_multi_ID_*.csv")))
+    return multi or sorted(glob.glob(os.path.join(output_csv_folder, f"{base}_ID_*.csv")))
 
 
 def _redact(value: str, token: Optional[str]) -> str:
@@ -609,7 +608,7 @@ class WindowsAudioProcessor:
     def extract_transcripts_batch(self, audio_files, progress_callback=None, word_timestamps=False, cancel_check=None):
         return self._run("extract_transcripts", {"audio_files": list(audio_files), "output_transcripts_folder": self.output_transcripts_folder, "word_timestamps": bool(word_timestamps), "enable_diarization": bool(self.enable_speaker_diarization)}, progress_callback, cancel_check)
 
-    def extract_transcript(self, audio_file, word_timestamps=False, progress_callback=None, cancel_check=None):
+    def extract_transcript(self, audio_file, progress_callback=None, word_timestamps=False, cancel_check=None):
         result = self.extract_transcripts_batch([audio_file], progress_callback, word_timestamps, cancel_check)
         if result["cancelled"]:
             return False
