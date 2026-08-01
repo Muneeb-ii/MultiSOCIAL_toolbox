@@ -76,7 +76,7 @@ Post-build checks:
 
 - `MultiSOCIAL.spec` is macOS-only.
 - `packaging/windows_gui.spec` analyzes only the shared GUI and worker client.
-- `packaging/windows_worker.spec` analyzes native pose/audio dependencies without wxPython.
+- `packaging/build_windows_embedded_worker.py` creates the private worker runtime from the locked worker environment without wxPython.
 - `packaging/assemble_windows.py` copies the finished worker onedir beneath `worker/`; it never merges PyInstaller TOCs.
 - Any new Windows GUI import of Torch, Transformers, MediaPipe, OpenCV, OpenSMILE, YOLO, or diarization code fails during `Analysis`, before assembly.
 

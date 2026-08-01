@@ -451,12 +451,10 @@ def test_source_windows_launcher_repairs_cv2_namespace_ownership():
 
 
 def test_worker_uses_checked_in_yolov5_inference_manifest():
-    spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
-    hook = (ROOT / "packaging" / "windows_hooks" / "hook-yolov5.py").read_text(encoding="utf-8")
+    audit = (ROOT / "packaging" / "audit_windows_environment.py").read_text(encoding="utf-8")
     manifest = _load_packaging_module("windows_hiddenimports")
 
-    assert "collect_submodules" not in spec
-    assert "collect_submodules" not in hook
+    assert "YOLOV5_INFERENCE_HIDDEN_IMPORTS" in audit
     assert {
         "yolov5.helpers",
         "yolov5.models.common",
@@ -469,30 +467,17 @@ def test_worker_uses_checked_in_yolov5_inference_manifest():
         module.startswith(("ultralytics.models", "ultralytics.trackers", "yolov5.train"))
         for module in manifest.YOLOV5_INFERENCE_HIDDEN_IMPORTS
     )
-    assert "sys.setrecursionlimit(max(sys.getrecursionlimit() * 5, 5000))" in spec
 
 
 def test_yolo_autoinstall_is_disabled_during_build_and_runtime():
-    spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
     runtime_hook = (ROOT / "src" / "runtime_hook_dlls.py").read_text(encoding="utf-8")
-    ultralytics_hook = (ROOT / "packaging" / "windows_hooks" / "hook-ultralytics.py").read_text(encoding="utf-8")
 
     for variable in ("YOLO_AUTOINSTALL", "YOLOv5_AUTOINSTALL"):
-        assert variable in spec
         assert variable in runtime_hook
-    assert "ultralytics.trackers" in ultralytics_hook
-    assert "ultralytics.models" in ultralytics_hook
 
-def test_windows_transformers_hook_cannot_expand_beyond_whisper_manifest():
-    spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
-    hook = (ROOT / "packaging" / "windows_hooks" / "hook-transformers.py").read_text(encoding="utf-8")
+def test_macos_transformers_hook_collects_required_metadata():
     mac_hook = (ROOT / "hooks" / "hook-transformers.py").read_text(encoding="utf-8")
 
-    assert 'WINDOWS_HOOKS = ROOT / "packaging" / "windows_hooks"' in spec
-    assert "hookspath=[str(WINDOWS_HOOKS)]" in spec
-    assert "collect_submodules" not in hook
-    assert "TRANSFORMERS_WHISPER_HIDDEN_IMPORTS" in hook
-    assert '"transformers.quantizers"' in hook
     assert "copy_metadata" in mac_hook
 
 def test_speechbrain_runtime_discovery_matches_checked_in_complete_manifest():

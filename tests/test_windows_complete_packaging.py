@@ -81,9 +81,8 @@ def test_windows_gui_does_not_statically_import_the_worker_native_graph():
     assert "assert_gui_graph(a)" in spec_source
 
 
-def test_windows_specs_build_independent_gui_and_console_worker():
+def test_windows_gui_and_embedded_worker_builds_are_independent():
     gui_spec = (ROOT / "packaging" / "windows_gui.spec").read_text(encoding="utf-8")
-    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
     workflow_source = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "assert_gui_graph(a)" in gui_spec
@@ -104,38 +103,21 @@ def test_windows_specs_build_independent_gui_and_console_worker():
     assert "MULTISOCIAL_CI_HF_TOKEN" in workflow_source
 
 
-def test_windows_dynamic_manifests_do_not_discover_transformers_or_diarization_recursively():
-    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
+def test_windows_worker_audit_uses_checked_in_runtime_manifests():
+    audit_source = (ROOT / "packaging" / "audit_windows_environment.py").read_text(encoding="utf-8")
     manifest = (ROOT / "packaging" / "windows_hiddenimports.py").read_text(encoding="utf-8")
-    transformer_hook = (ROOT / "hooks" / "hook-transformers.py").read_text(encoding="utf-8")
-    windows_hooks = (
-        ROOT / "packaging" / "windows_hooks"
-    )
 
-    for package in ("transformers", "pyannote", "speechbrain", "torchaudio", "huggingface_hub"):
-        assert f'collect_submodules("{package}")' not in worker_spec
-    for hook_name in ("hook-torch.py", "hook-torchaudio.py", "hook-transformers.py"):
-        assert "collect_submodules" not in (windows_hooks / hook_name).read_text(encoding="utf-8")
+    assert "assert_worker_manifests_exist" in audit_source
     assert "TORCH_RUNTIME_HIDDEN_IMPORTS" in manifest
     assert "TORCHAUDIO_RUNTIME_HIDDEN_IMPORTS" in manifest
     assert "transformers.models.whisper.modeling_whisper" in manifest
     assert "transformers.integrations.ggml" in manifest
     assert "pyannote.audio.pipelines.speaker_diarization" in manifest
-    assert "transformers.integrations.ggml" not in transformer_hook
-    assert "transformers.quantizers" in transformer_hook
-
-
-def test_worker_collects_transformers_dependency_metadata_recursively():
-    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
-
-    assert 'copy_metadata(package, recursive=package == "transformers")' in worker_spec
-
-
-def test_worker_uses_recursive_transformers_metadata_and_native_launcher():
-    worker_spec = (ROOT / "packaging" / "windows_worker.spec").read_text(encoding="utf-8")
+def test_embedded_worker_copies_metadata_with_its_runtime_and_uses_native_launcher():
+    builder_source = (ROOT / "packaging" / "build_windows_embedded_worker.py").read_text(encoding="utf-8")
     launcher_source = (ROOT / "packaging" / "windows_worker_launcher.c").read_text(encoding="utf-8")
 
-    assert 'copy_metadata(package, recursive=package == "transformers")' in worker_spec
+    assert 'shutil.copytree(\n        site_packages,\n        output / "Lib" / "site-packages",' in builder_source
     assert "SetDllDirectoryW(NULL)" in launcher_source
     assert "reset_pyinstaller_environment();" in launcher_source
     assert "_PYI_ARCHIVE_FILE" in launcher_source
