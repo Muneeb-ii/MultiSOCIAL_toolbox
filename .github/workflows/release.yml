@@ -53,8 +53,27 @@ jobs:
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "should_publish_release=${should_publish}" >> "${GITHUB_OUTPUT}"
 
-  macos-build:
+  python-tests:
     needs: prepare
+    runs-on: macos-latest
+    env:
+      PIP_NO_CACHE_DIR: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Install test environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "setuptools==80.10.2"
+          python -m pip install ".[dev]"
+      - name: Run full Python test suite
+        run: python -m pytest
+
+  macos-build:
+    needs: [prepare, python-tests]
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +123,34 @@ jobs:
             "${app_path}/Contents/MacOS/${app_name}"
           python .github/scripts/validate_complete_bundle_layout.py
 
+      - name: Restore immutable macOS Whisper E2E cache
+        if: ${{ github.repository != env.UPSTREAM_REPOSITORY && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache@v4
+        with:
+          path: .tmp/macos-huggingface
+          key: macos-${{ matrix.profile }}-whisper-tiny-169d4a4341b33bc18d8881c4b69c2e104e1cc0af-hub-v1
+
+      - name: Run fork-tag packaged macOS native E2E
+        if: ${{ github.repository != env.UPSTREAM_REPOSITORY && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+        # Warm local source-mode runs finish in seconds; a cold run pays only the
+        # pinned Whisper download. Fail fast instead of burning the 6h default.
+        timeout-minutes: 30
+        shell: bash
+        env:
+          HF_HOME: ${{ github.workspace }}/.tmp/macos-huggingface
+          HF_HUB_DOWNLOAD_TIMEOUT: "120"
+          HF_HUB_ETAG_TIMEOUT: "60"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
+          MULTISOCIAL_WHISPER_MODEL_REVISION: 169d4a4341b33bc18d8881c4b69c2e104e1cc0af
+          MULTISOCIAL_MACOS_PACKAGED_E2E: "1"
+          MULTISOCIAL_MACOS_E2E_WORKSPACE: ${{ github.workspace }}/.tmp/macos-e2e-${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          app_name="MultiSOCIAL-Standard"
+          [[ "${MULTISOCIAL_BUILD_PROFILE}" == "complete" ]] && app_name="MultiSOCIAL-Complete"
+          "dist/${app_name}.app/Contents/MacOS/${app_name}"
+
       - name: Archive macOS application
         shell: bash
         run: |
@@ -122,7 +169,7 @@ jobs:
           path: workflow-artifacts/*
 
   windows-build:
-    needs: prepare
+    needs: [prepare, python-tests]
     strategy:
       fail-fast: false
       matrix:

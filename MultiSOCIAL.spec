@@ -41,6 +41,7 @@ hiddenimports = [
     "backports",
     "backports.tarfile",
     "imageio_ffmpeg",
+    "macos_packaged_e2e",
     "mediapipe.python._framework_bindings",
     "mediapipe.python.solutions",
     "mediapipe.python.solutions.drawing_utils",

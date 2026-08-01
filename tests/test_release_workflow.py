@@ -25,6 +25,28 @@ def test_release_workflow_has_upstream_auto_release_guardrails():
     assert "needs: [prepare, macos-build, windows-build, windows-client-compat]" in workflow
 
 
+def test_release_workflow_requires_python_tests_before_packaging():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert "python-tests:" in workflow
+    assert "Run full Python test suite" in workflow
+    assert "run: python -m pytest" in workflow
+    assert workflow.count("needs: [prepare, python-tests]") == 2
+
+
+def test_release_workflow_runs_packaged_macos_e2e_only_for_fork_tags():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    runner = (REPO_ROOT / "src" / "macos_packaged_e2e.py").read_text(encoding="utf-8")
+
+    assert "Run fork-tag packaged macOS native E2E" in workflow
+    assert "github.repository != env.UPSTREAM_REPOSITORY" in workflow
+    assert "MULTISOCIAL_MACOS_PACKAGED_E2E: \"1\"" in workflow
+    assert "MULTISOCIAL_MACOS_E2E_WORKSPACE" in workflow
+    assert "WHISPER_ATTEMPTS = 3" in runner
+    assert "Person fixture hash mismatch" in runner
+    assert "Cancellation left committed or staged audio output" in runner
+
+
 def test_release_workflow_uploads_versioned_artifacts():
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 

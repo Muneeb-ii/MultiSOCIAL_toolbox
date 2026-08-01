@@ -11,6 +11,7 @@ This module provides functionality for:
 import os
 import json
 import sys
+from pathlib import Path
 import torch
 import opensmile
 import gc
@@ -207,13 +208,14 @@ class AudioProcessor:
             
         return scoped_callback
 
-    def extract_audio_features(self, filepath, progress_callback=None):
+    def extract_audio_features(self, filepath, progress_callback=None, cancel_check=None):
         """
         Extract audio features from a single WAV file using OpenSMILE.
         
         Args:
             filepath (str): Path to the WAV file
             progress_callback (callable, optional): Callback function for progress updates
+            cancel_check (callable, optional): Return True to abandon this file without output
             
         Returns:
             str: Path to the saved CSV file with features
@@ -222,6 +224,8 @@ class AudioProcessor:
             raise ValueError("Audio features output folder not configured")
             
         try:
+            if cancel_check and cancel_check():
+                return False
             if progress_callback:
                 progress_callback(0)
             
@@ -234,18 +238,27 @@ class AudioProcessor:
             
             # Initialize OpenSMILE processor
             smile = _PrivateWorkerSmile(feature_set=feature_set_name, feature_level=feature_level_name)
+
+            if cancel_check and cancel_check():
+                return False
             
             if progress_callback:
                 progress_callback(20)
             
             # Audio input is decoded via scipy for WAV and soundfile/libsndfile otherwise.
             y, sr = _load_audio_for_opensmile(filepath)
+
+            if cancel_check and cancel_check():
+                return False
             
             if progress_callback:
                 progress_callback(40)
             
             # Extract features using OpenSMILE
             features = smile.process_signal(y, sr)
+
+            if cancel_check and cancel_check():
+                return False
             
             if progress_callback:
                 progress_callback(70)
@@ -274,6 +287,8 @@ class AudioProcessor:
             output_csv = os.path.join(self.output_audio_features_folder, filename)
             transaction = OutputStaging(self.output_audio_features_folder)
             with transaction as staged:
+                if cancel_check and cancel_check():
+                    return False
                 features.to_csv(staged / filename, index=False)
                 transaction.commit()
             
@@ -317,7 +332,14 @@ class AudioProcessor:
                 return file_progress_callback
             
             try:
-                self.extract_audio_features(audio_file, progress_callback=make_progress_callback(i + 1, total_files))
+                result = self.extract_audio_features(
+                    audio_file,
+                    progress_callback=make_progress_callback(i + 1, total_files),
+                    cancel_check=cancel_check,
+                )
+                if result is False:
+                    outcome["cancelled"] = True
+                    break
                 outcome["succeeded"].append(audio_file)
             except Exception as e:
                 print(f"Error processing {audio_file}: {e}")
@@ -1309,9 +1331,13 @@ class AudioProcessor:
                 
             aligned_rows.append(row)
 
-        # Save to CSV
+        # Save to CSV only after its complete contents have been produced.
         df_aligned = pd.DataFrame(aligned_rows)
-        df_aligned.to_csv(output_csv, index=False)
+        output_path = Path(output_csv)
+        transaction = OutputStaging(output_path.parent)
+        with transaction as staged:
+            df_aligned.to_csv(staged / output_path.name, index=False)
+            transaction.commit()
         print(f"Saved aligned features: {output_csv}")
         return output_csv
 

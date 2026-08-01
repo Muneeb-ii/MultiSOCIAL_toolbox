@@ -61,6 +61,7 @@ py-modules = [
   "audio",
   "captions",
   "gui_utils",
+  "macos_packaged_e2e",
   "native_backend",
   "native_worker_client",
   "pose",

@@ -138,6 +138,33 @@ def test_extract_audio_features_writes_timestamped_csv(monkeypatch, import_audio
     assert progress_updates[-1] == 100
 
 
+def test_extract_audio_features_cancellation_does_not_commit_or_leave_staging(
+    monkeypatch, import_audio, tmp_path
+):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=None,
+        status_callback=None,
+    )
+    monkeypatch.setattr(
+        audio,
+        "_load_audio_for_opensmile",
+        lambda path: (np.array([0.0, 1.0], dtype=np.float32), 2),
+    )
+    calls = {"count": 0}
+
+    def cancel_at_staging_boundary():
+        calls["count"] += 1
+        return calls["count"] >= 5
+
+    assert processor.extract_audio_features(
+        "clip.flac", cancel_check=cancel_at_staging_boundary
+    ) is False
+    assert not (tmp_path / "clip.csv").exists()
+    assert not list(tmp_path.glob(".multisocial-stage-*"))
+
+
 def _make_processor(audio, tmp_path):
     return audio.AudioProcessor(
         output_audio_features_folder=str(tmp_path),
@@ -610,7 +637,7 @@ def test_extract_audio_features_batch_cancel_check(import_audio, tmp_path, monke
     processor = _make_processor(audio, tmp_path)
     processed = []
 
-    def fake_extract(path, progress_callback=None):
+    def fake_extract(path, progress_callback=None, cancel_check=None):
         processed.append(path)
         return str(tmp_path / f"{os.path.basename(path)}.csv")
 
@@ -637,7 +664,7 @@ def test_extract_audio_features_batch_reports_per_file_failure(import_audio, tmp
     audio = import_audio
     processor = _make_processor(audio, tmp_path)
 
-    def fake_extract(path, progress_callback=None):
+    def fake_extract(path, progress_callback=None, cancel_check=None):
         if path.endswith("bad.wav"):
             raise RuntimeError("decode failed")
         return path + ".csv"
