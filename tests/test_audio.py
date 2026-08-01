@@ -346,6 +346,55 @@ def test_whisper_batch_size_is_one_when_diarization_enabled(monkeypatch, import_
     assert captured["batch_size"] == 1
 
 
+def test_whisper_honours_an_explicit_immutable_model_revision(monkeypatch, import_audio, tmp_path):
+    audio = import_audio
+    processor = audio.AudioProcessor(
+        output_audio_features_folder=str(tmp_path),
+        output_transcripts_folder=str(tmp_path),
+    )
+    processor.device = "cpu"
+    processor.torch_dtype = "float32"
+    monkeypatch.setenv(
+        "MULTISOCIAL_WHISPER_MODEL_REVISION",
+        "169d4a4341b33bc18d8881c4b69c2e104e1cc0af",
+    )
+
+    class FakeModel:
+        device = type("Device", (), {"type": "cpu"})()
+
+        def to(self, device):
+            return self
+
+    fake_processor = type(
+        "FakeProcessor",
+        (),
+        {"tokenizer": object(), "feature_extractor": object()},
+    )()
+    model_calls = []
+    processor_calls = []
+
+    def load_model(*args, **kwargs):
+        model_calls.append(kwargs)
+        if kwargs["local_files_only"]:
+            raise OSError("not cached")
+        return FakeModel()
+
+    def load_processor(*args, **kwargs):
+        processor_calls.append(kwargs)
+        if kwargs["local_files_only"]:
+            raise OSError("not cached")
+        return fake_processor
+
+    monkeypatch.setattr(audio.AutoModelForSpeechSeq2Seq, "from_pretrained", load_model)
+    monkeypatch.setattr(audio.AutoProcessor, "from_pretrained", load_processor)
+    monkeypatch.setattr(audio, "pipeline", lambda *args, **kwargs: object())
+
+    processor._load_whisper_model()
+
+    assert all(call["revision"] == "169d4a4341b33bc18d8881c4b69c2e104e1cc0af" for call in model_calls)
+    assert all(call["revision"] == "169d4a4341b33bc18d8881c4b69c2e104e1cc0af" for call in processor_calls)
+
+
 def test_extract_transcripts_batch_diarization_saves_each_file_and_clears_whisper(monkeypatch, import_audio, tmp_path):
     audio = import_audio
     processor = audio.AudioProcessor(

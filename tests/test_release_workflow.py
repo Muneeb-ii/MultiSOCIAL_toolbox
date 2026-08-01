@@ -63,6 +63,10 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "packaging/build_windows_embedded_worker.py" in workflow
     assert "packaging/windows_gui.spec" in workflow
     assert "MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny" in workflow
+    assert "MULTISOCIAL_WHISPER_MODEL_REVISION: 169d4a4341b33bc18d8881c4b69c2e104e1cc0af" in workflow
+    assert "HF_HUB_DOWNLOAD_TIMEOUT: \"120\"" in workflow
+    assert "Restore immutable Whisper E2E cache" in workflow
+    assert "--whisper-attempts 3" in workflow
     assert "needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e" in workflow
     assert "windows_packaged_e2e.py" in workflow
     assert "Diagnose direct native launcher-to-worker probe" in workflow
@@ -94,4 +98,6 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "pyannote.core==5.0.0" in complete_bootstrap
     assert 'destination.glob("*.txt")' in e2e
     assert 'transcripts.glob("*.txt")' in e2e
+    assert "--whisper-attempts" in e2e
+    assert "Whisper ASR failed after" in e2e
     assert 'glob("*.json")' not in e2e

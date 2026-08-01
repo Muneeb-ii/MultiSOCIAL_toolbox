@@ -132,6 +132,14 @@ jobs:
     env:
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
+      # Keep the real packaged ASR E2E reproducible: cache one immutable model
+      # snapshot, allow slow CDN connections, and keep telemetry out of CI logs.
+      HF_HOME: ${{ github.workspace }}/.tmp/huggingface
+      HF_HUB_DOWNLOAD_TIMEOUT: "120"
+      HF_HUB_ETAG_TIMEOUT: "60"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
+      MULTISOCIAL_WHISPER_MODEL_REVISION: 169d4a4341b33bc18d8881c4b69c2e104e1cc0af
       PIP_NO_CACHE_DIR: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.tmp/pycache-${{ matrix.profile }}-${{ matrix.repetition }}
@@ -142,6 +150,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
+
+      - name: Restore immutable Whisper E2E cache
+        uses: actions/cache@v4
+        with:
+          path: .tmp/huggingface
+          key: windows-${{ matrix.profile }}-whisper-tiny-169d4a4341b33bc18d8881c4b69c2e104e1cc0af-hub-0.24.7-v1
 
       - name: Verify committed Windows packaging inputs
         shell: bash
@@ -271,8 +285,6 @@ jobs:
 
       - name: Exercise packaged GUI-to-worker native operations
         shell: bash
-        env:
-          MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
@@ -283,6 +295,7 @@ jobs:
             --gui "dist/${app_name}/${app_name}.exe" \
             --profile "${MULTISOCIAL_BUILD_PROFILE}" \
             --workspace ".tmp/e2e-${MULTISOCIAL_BUILD_PROFILE}-${{ matrix.repetition }}" \
+            --whisper-attempts 3 \
             "${options[@]}"
 
       - name: Run optional Complete diarization E2E
@@ -327,11 +340,23 @@ jobs:
     env:
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       MULTISOCIAL_BUILD_PROFILE: ${{ matrix.profile }}
+      HF_HOME: ${{ github.workspace }}/.tmp/huggingface
+      HF_HUB_DOWNLOAD_TIMEOUT: "120"
+      HF_HUB_ETAG_TIMEOUT: "60"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
+      MULTISOCIAL_WHISPER_MODEL_REVISION: 169d4a4341b33bc18d8881c4b69c2e104e1cc0af
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
+
+      - name: Restore immutable Whisper E2E cache
+        uses: actions/cache@v4
+        with:
+          path: .tmp/huggingface
+          key: windows-${{ matrix.profile }}-whisper-tiny-169d4a4341b33bc18d8881c4b69c2e104e1cc0af-hub-0.24.7-v1
       - uses: actions/download-artifact@v5
         with:
           name: MultiSOCIAL-${{ env.APP_VERSION }}-${{ matrix.profile }}-Windows
@@ -383,8 +408,6 @@ jobs:
 
       - name: Run extracted canonical ZIP through packaged boundary
         shell: bash
-        env:
-          MULTISOCIAL_WHISPER_MODEL_ID: openai/whisper-tiny
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"
@@ -395,7 +418,8 @@ jobs:
             --gui "${gui}" \
             --profile "${MULTISOCIAL_BUILD_PROFILE}" \
             --workspace ".tmp/compat-${MULTISOCIAL_BUILD_PROFILE}" \
-            --include-whisper
+            --include-whisper \
+            --whisper-attempts 3
 
       - name: Run qualified Complete diarization after relocation
         if: matrix.profile == 'complete' && (needs.prepare.outputs.should_publish_release == 'true' || inputs.run_windows_complete_e2e)

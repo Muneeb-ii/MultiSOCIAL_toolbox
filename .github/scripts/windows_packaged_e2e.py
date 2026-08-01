@@ -118,15 +118,61 @@ def _run_diarization(gui: Path, workspace: Path, tone: Path) -> None:
         raise RuntimeError("Complete diarization did not commit a transcript")
 
 
+def _run_whisper(gui: Path, workspace: Path, tone: Path, attempts: int) -> None:
+    """Run packaged ASR with bounded retries for transient Hub transport failures.
+
+    The worker writes output atomically, so a failed attempt cannot be mistaken for
+    a completed transcription.  A later attempt can safely reuse Hugging Face's
+    verified, resumable cache entries.
+    """
+    transcripts = workspace / "transcripts"
+    transcripts.mkdir(exist_ok=True)
+    error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            whisper_result = _invoke(
+                gui,
+                workspace,
+                f"whisper-{attempt}",
+                "extract_transcripts",
+                {
+                    "audio_files": [str(tone.resolve())],
+                    "output_transcripts_folder": str(transcripts.resolve()),
+                    "word_timestamps": False,
+                    "enable_diarization": False,
+                },
+            )
+            _assert_success(whisper_result, "Whisper ASR")
+            if not list(transcripts.glob("*.txt")):
+                raise RuntimeError("Whisper did not commit a transcript")
+            return
+        except Exception as exc:
+            error = exc
+            if attempt == attempts:
+                break
+            delay = 10 * attempt
+            print(
+                f"Whisper ASR attempt {attempt}/{attempts} failed; "
+                f"retrying in {delay}s.",
+                flush=True,
+            )
+            time.sleep(delay)
+    raise RuntimeError(f"Whisper ASR failed after {attempts} attempts") from error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--gui", type=Path, required=True)
     parser.add_argument("--profile", choices=("standard", "complete"), required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--include-whisper", action="store_true")
+    parser.add_argument("--only-whisper", action="store_true")
+    parser.add_argument("--whisper-attempts", type=int, default=1)
     parser.add_argument("--include-diarization", action="store_true")
     parser.add_argument("--only-diarization", action="store_true")
     args = parser.parse_args()
+    if args.whisper_attempts < 1:
+        parser.error("--whisper-attempts must be at least 1")
 
     gui = args.gui.resolve()
     workspace = args.workspace.resolve()
@@ -136,6 +182,10 @@ def main() -> None:
         _write_tone(tone, 1)
     if args.only_diarization:
         _run_diarization(gui, workspace, tone)
+        return
+
+    if args.only_whisper:
+        _run_whisper(gui, workspace, tone, args.whisper_attempts)
         return
 
     worker_root = gui.parent / "worker"
@@ -275,23 +325,7 @@ def main() -> None:
         raise RuntimeError("Cancellation left committed or staged output files")
 
     if args.include_whisper:
-        transcripts = workspace / "transcripts"
-        transcripts.mkdir(exist_ok=True)
-        whisper_result = _invoke(
-            gui,
-            workspace,
-            "whisper",
-            "extract_transcripts",
-            {
-                "audio_files": [str(tone.resolve())],
-                "output_transcripts_folder": str(transcripts.resolve()),
-                "word_timestamps": False,
-                "enable_diarization": False,
-            },
-        )
-        _assert_success(whisper_result, "Whisper ASR")
-        if not list(transcripts.glob("*.txt")):
-            raise RuntimeError("Whisper did not commit a transcript")
+        _run_whisper(gui, workspace, tone, args.whisper_attempts)
 
     if args.include_diarization:
         _run_diarization(gui, workspace, tone)

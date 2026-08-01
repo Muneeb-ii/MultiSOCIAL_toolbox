@@ -342,6 +342,10 @@ class AudioProcessor:
         # Use standard large-v3-turbo for better speed/accuracy balance than distil
         # or fallback to large-v3 if turbo is unavailable
         model_id = os.environ.get("MULTISOCIAL_WHISPER_MODEL_ID", "openai/whisper-large-v3-turbo")
+        # CI can pin its small verification model to an immutable Hub commit.  Normal
+        # user runs intentionally continue to follow the selected model's default
+        # revision, preserving the existing user-facing behaviour.
+        model_revision = os.environ.get("MULTISOCIAL_WHISPER_MODEL_REVISION")
 
         if progress_callback:
             progress_callback(10)
@@ -352,6 +356,8 @@ class AudioProcessor:
                 "use_safetensors": True,
                 "local_files_only": local_files_only,
             }
+            if model_revision:
+                kwargs["revision"] = model_revision
             try:
                 return AutoModelForSpeechSeq2Seq.from_pretrained(
                     model_id,
@@ -387,9 +393,15 @@ class AudioProcessor:
 
         # Load processor
         try:
-            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
+            processor_kwargs = {"local_files_only": True}
+            if model_revision:
+                processor_kwargs["revision"] = model_revision
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, **processor_kwargs)
         except Exception:
-            self.whisper_processor = AutoProcessor.from_pretrained(model_id, local_files_only=False)
+            processor_kwargs = {"local_files_only": False}
+            if model_revision:
+                processor_kwargs["revision"] = model_revision
+            self.whisper_processor = AutoProcessor.from_pretrained(model_id, **processor_kwargs)
 
         if progress_callback:
             progress_callback(55)
