@@ -48,6 +48,34 @@ def get_yolov5_weights_path():
     os.makedirs(runtime_assets_dir, exist_ok=True)
     return runtime_path
 
+
+def _configure_frozen_yolov5_file_date():
+    """Keep YOLOv5's informational version banner compatible with PyInstaller."""
+    if not runtime_services.is_frozen_runtime():
+        return
+
+    from yolov5.utils import general as yolov5_general
+    from yolov5.utils import torch_utils as yolov5_torch_utils
+
+    if getattr(yolov5_general, "_multisocial_safe_file_date", False):
+        return
+
+    original_file_date = yolov5_general.file_date
+
+    def safe_file_date(path=yolov5_general.__file__):
+        try:
+            return original_file_date(path)
+        except OSError:
+            # PyInstaller keeps this module in its archive, so its synthetic
+            # ``__file__`` may not exist on disk. This value is diagnostic only.
+            return "packaged"
+
+    yolov5_general.file_date = safe_file_date
+    # torch_utils imported file_date directly, so update that bound reference.
+    yolov5_torch_utils.file_date = safe_file_date
+    yolov5_general._multisocial_safe_file_date = True
+
+
 def _resolve_ffmpeg_exe():
     """Locate ffmpeg without importing the GUI layer.
 
@@ -655,6 +683,7 @@ class PoseProcessor:
         if self.yolo is None:
             try:
                 ensure_yolov5_weights()
+                _configure_frozen_yolov5_file_date()
                 self.yolo = YOLOv5(get_yolov5_weights_path())
                 if self.status_callback:
                     self.status_callback("🤖 YOLOv5 model loaded for multi-person detection")

@@ -518,6 +518,30 @@ def test_speechbrain_runtime_discovery_matches_checked_in_complete_manifest():
     } <= set(manifest.COMPLETE_HIDDEN_IMPORTS)
 
 
+def test_speechbrain_listdir_proxy_does_not_bind_when_pathlib_caches_it():
+    path = ROOT / "src" / "runtime_hook_dlls.py"
+    spec = importlib.util.spec_from_file_location("test_runtime_hook_listdir", path)
+    assert spec is not None and spec.loader is not None
+    runtime_hook = importlib.util.module_from_spec(spec)
+    original_listdir = os.listdir
+    try:
+        spec.loader.exec_module(runtime_hook)
+        calls = []
+
+        def listdir_with_one_argument(path):
+            calls.append(path)
+            return []
+
+        runtime_hook._original_listdir = listdir_with_one_argument
+        class Accessor:
+            listdir = os.listdir
+
+        assert Accessor().listdir("unrelated-directory") == []
+        assert calls == ["unrelated-directory"]
+    finally:
+        os.listdir = original_listdir
+
+
 
 def test_environment_audit_rejects_distributions_added_after_locked_install(tmp_path):
     audit = _load_packaging_module("audit_windows_environment")

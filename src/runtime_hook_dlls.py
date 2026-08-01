@@ -135,11 +135,14 @@ _NON_WINDOWS_SPEECHBRAIN_FILES = {
 }
 
 
-def _patched_listdir(path="."):
+def _patched_listdir(path=".", *args, **kwargs):
+    """Use the original listdir except for missing SpeechBrain package paths."""
     str_path = str(path).replace("\\", "/")
     try:
-        return _original_listdir(path)
+        return _original_listdir(path, *args, **kwargs)
     except FileNotFoundError:
+        if args or kwargs:
+            raise
         files = (
             _WINDOWS_SPEECHBRAIN_FILES
             if sys.platform == "win32"
@@ -154,4 +157,14 @@ def _patched_listdir(path="."):
         raise
 
 
-os.listdir = _patched_listdir
+class _SpeechBrainListdirProxy:
+    """Callable wrapper that cannot become a bound method on ``pathlib``."""
+
+    def __call__(self, path=".", *args, **kwargs):
+        return _patched_listdir(path, *args, **kwargs)
+
+
+# ``pathlib`` copies ``os.listdir`` onto an accessor class. A plain Python
+# function would bind ``self`` when that class invokes it, unlike the original
+# built-in function. A callable instance keeps the original one-argument ABI.
+os.listdir = _SpeechBrainListdirProxy()

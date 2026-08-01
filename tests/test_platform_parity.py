@@ -133,3 +133,12 @@ def test_native_and_windows_processors_have_matching_public_operation_signatures
     assert source_signature("embed_pose_video") == names(
         WindowsPoseProcessor.embed_pose_video
     )
+
+
+def test_frozen_yolov5_version_banner_is_configured_only_on_demand():
+    pose_source = (SRC_ROOT / "pose.py").read_text(encoding="utf-8")
+
+    assert "def _configure_frozen_yolov5_file_date" in pose_source
+    assert "if not runtime_services.is_frozen_runtime():" in pose_source
+    assert "yolov5_torch_utils.file_date = safe_file_date" in pose_source
+    assert "_configure_frozen_yolov5_file_date()" in pose_source

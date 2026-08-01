@@ -22,7 +22,6 @@ for distribution in (
         pass
 module_collection_mode = "pyz+py"
 excludedimports = [
-    "transformers.quantizers",
     "transformers.integrations.awq",
     "transformers.integrations.bitsandbytes",
     "transformers.models.gptq",

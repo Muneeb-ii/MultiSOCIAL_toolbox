@@ -47,6 +47,12 @@ def test_release_workflow_runs_packaged_macos_e2e_only_for_fork_tags():
     assert "Cancellation left committed or staged audio output" in runner
 
 
+def test_transformers_hook_keeps_required_runtime_quantizers():
+    hook = (REPO_ROOT / "hooks" / "hook-transformers.py").read_text(encoding="utf-8")
+
+    assert '"transformers.quantizers"' not in hook
+
+
 def test_release_workflow_uploads_versioned_artifacts():
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
