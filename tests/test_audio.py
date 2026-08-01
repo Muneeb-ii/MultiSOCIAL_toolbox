@@ -91,6 +91,29 @@ def test_whisper_pipeline_audio_input_wraps_decoded_audio(monkeypatch, import_au
     assert payload["array"].tolist() == [1.0, 2.0]
 
 
+def test_private_worker_opensmile_config_uses_only_a_verified_ascii_runtime_root(
+    monkeypatch, import_audio, tmp_path
+):
+    audio = import_audio
+    worker = tmp_path / "worker"
+    config = worker / "Lib" / "site-packages" / "opensmile" / "core" / "config"
+    config.mkdir(parents=True)
+    executable = worker / "python.exe"
+    executable.touch()
+    monkeypatch.setattr(audio.sys, "platform", "win32")
+    monkeypatch.setattr(audio.sys, "executable", str(executable))
+    monkeypatch.setenv(audio._WORKER_RUNTIME_ROOT_ENV, str(worker))
+
+    assert audio._private_worker_opensmile_config_root() == str(config)
+    assert audio._PrivateWorkerSmile().default_config_root == str(config)
+
+    unicode_worker = tmp_path / "Üworker"
+    unicode_config = unicode_worker / "Lib" / "site-packages" / "opensmile" / "core" / "config"
+    unicode_config.mkdir(parents=True)
+    monkeypatch.setenv(audio._WORKER_RUNTIME_ROOT_ENV, str(unicode_worker))
+    assert audio._private_worker_opensmile_config_root() is None
+
+
 def test_extract_audio_features_writes_timestamped_csv(monkeypatch, import_audio, tmp_path):
     audio = import_audio
     processor = audio.AudioProcessor(

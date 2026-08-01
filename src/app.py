@@ -10,10 +10,12 @@ import os
 import sys
 import threading
 
-# Set up GPU environment specially for Mediapipe (specific for Saturn Cloud), if you use some other high performance computing platform check compatibility before usage
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Make sure the system uses the GPU
-# Enable MPS fallback for Mac to prevent freezes on unsupported operations
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+# These legacy settings are for the non-Windows in-process runtime. Windows
+# analysis runs in the private CPU worker, where MediaPipe GPU is unsupported.
+if not sys.platform.startswith("win"):
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # Enable MPS fallback for Mac to prevent freezes on unsupported operations.
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 
 # Third-party libraries (assumed pre-installed via the project package metadata)
@@ -26,6 +28,7 @@ load_dotenv()
 
 import gui_utils
 import runtime_services
+from analysis_backend import get_backend
 from gui_utils import Theme
 from ui_components import (
     GradientPanel,
@@ -40,27 +43,8 @@ from ui_components import (
     SectionCard,
 )
 
-_PoseProcessorCls = None
-
-
-def _get_pose_processor_class():
-    """Load pose/Mediapipe only when the user starts a video step (startup stays light on Windows)."""
-    global _PoseProcessorCls
-    if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
-        return None
-    if _PoseProcessorCls is None:
-        from pose import PoseProcessor
-
-        _PoseProcessorCls = PoseProcessor
-    return _PoseProcessorCls
-
-
-# Keep packaged import smoke test lightweight by avoiding heavy ML/native imports.
-if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") != "1":
-    gui_utils.ensure_ffmpeg_available()
-    from audio import AudioProcessor
-else:
-    AudioProcessor = None
+def find_pose_csv_paths(output_folder, video_path, multi_person=None):
+    return get_backend().find_pose_csv_paths(output_folder, video_path, multi_person)
 
 # Enable High DPI on Windows
 gui_utils.setup_high_dpi()
@@ -1534,11 +1518,6 @@ class VideoToWavConverter(wx.Frame):
         if not self._ensure_output_directory(self.extracted_pose_folder, "pose_features"):
             return
 
-        PoseCls = _get_pose_processor_class()
-        if PoseCls is None:
-            wx.MessageBox("Pose extraction is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
-            return
-
         stride_val = 1
         try:
             stride_val = max(1, int(self.frameStrideInput.GetValue()))
@@ -1547,7 +1526,7 @@ class VideoToWavConverter(wx.Frame):
         downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
 
         try:
-            pose_processor = PoseCls(
+            pose_processor = get_backend().create_pose_processor(
                 self.extracted_pose_folder,
                 status_callback=self.set_status_message,
                 frame_threshold=self.frameThresholdInput.GetValue(),
@@ -1577,8 +1556,6 @@ class VideoToWavConverter(wx.Frame):
         failed = False
         failures = []
         try:
-            from pose import find_pose_csv_paths
-
             total_files = len(video_files)
             multi_person = bool(getattr(pose_processor, "enable_multi_person_pose", False))
             mode_label = "multi-person" if multi_person else "single-person"
@@ -1653,8 +1630,6 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
-        from pose import find_pose_csv_paths
-
         multi_person = bool(
             hasattr(self, "multiPersonCheckbox") and self.multiPersonCheckbox.GetValue()
         )
@@ -1678,11 +1653,6 @@ class VideoToWavConverter(wx.Frame):
             )
             return
 
-        PoseCls = _get_pose_processor_class()
-        if PoseCls is None:
-            wx.MessageBox("Pose embedding is unavailable in this launch mode.", "Error", wx.OK | wx.ICON_ERROR)
-            return
-
         if not self._ensure_output_directory(self.embedded_pose_folder, "embedded_pose"):
             return
 
@@ -1694,7 +1664,7 @@ class VideoToWavConverter(wx.Frame):
         downscale_to = (1280, 720) if (hasattr(self, "downscaleCheckbox") and self.downscaleCheckbox.GetValue()) else None
 
         try:
-            pose_processor = PoseCls(
+            pose_processor = get_backend().create_pose_processor(
                 output_csv_folder=self.extracted_pose_folder,
                 output_video_folder=self.embedded_pose_folder,
                 status_callback=self.set_status_message,
@@ -1935,7 +1905,7 @@ class VideoToWavConverter(wx.Frame):
             return
 
         # Initialize audio processor
-        audio_processor = AudioProcessor(
+        audio_processor = get_backend().create_audio_processor(
             output_audio_features_folder=self.extracted_audio_folder,
             output_transcripts_folder=None,  # Not needed for feature extraction
             status_callback=self.set_status_message
@@ -2057,7 +2027,7 @@ class VideoToWavConverter(wx.Frame):
                 enable_diarization = False
 
         # Initialize audio processor
-        audio_processor = AudioProcessor(
+        audio_processor = get_backend().create_audio_processor(
             output_audio_features_folder=None,
             output_transcripts_folder=self.extracted_transcripts_folder,
             status_callback=self.set_status_message,
@@ -2182,7 +2152,7 @@ class VideoToWavConverter(wx.Frame):
             # so diarization is explicitly disabled: otherwise the AudioProcessor
             # default (enabled) would offload Whisper and attempt pyannote for every
             # file we auto-transcribe here, which is slow and needs an HF token.
-            audio_processor = AudioProcessor(
+            audio_processor = get_backend().create_audio_processor(
                 output_audio_features_folder=self.extracted_audio_folder,
                 output_transcripts_folder=self.extracted_transcripts_folder,
                 status_callback=self.set_status_message,
@@ -2280,25 +2250,16 @@ class VideoToWavConverter(wx.Frame):
 
 def main():
     if os.environ.get("MULTISOCIAL_IMPORT_SMOKE_TEST") == "1":
-        if os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1":
-            heavy_model = runtime_services.resource_path(
-                "mediapipe", "modules", "pose_landmark", "pose_landmark_heavy.tflite"
-            )
-            if not os.path.isfile(heavy_model):
-                print(f"ERROR: Missing bundled Heavy pose model: {heavy_model}", file=sys.stderr, flush=True)
-                sys.exit(1)
-            print("Bundled Heavy pose model check passed.", flush=True)
         profile = runtime_services.get_build_profile().lower()
-        if profile == "complete":
-            try:
-                runtime_services.preload_frozen_windows_diarization_dependencies()
-                import pyannote.audio
-                print("Import smoke test passed (complete profile).", flush=True)
-            except ImportError as e:
-                print(f"ERROR: pyannote.audio import failed: {e}", file=sys.stderr, flush=True)
-                sys.exit(1)
-        else:
-            print("Import smoke test passed (standard profile).", flush=True)
+        try:
+            message = get_backend().validate_import_smoke(
+                profile,
+                os.environ.get("MULTISOCIAL_VERIFY_HEAVY_POSE_ASSET") == "1",
+            )
+        except Exception as exc:
+            print(f"ERROR: {exc}", file=sys.stderr, flush=True)
+            sys.exit(1)
+        print(message, flush=True)
         return
 
     # Create wx.App FIRST before any wx calls (including MessageBox)
@@ -2320,6 +2281,3 @@ def main():
     frm = VideoToWavConverter(None)
     frm.Show()
     app.MainLoop()
-
-if __name__ == '__main__':
-    main()

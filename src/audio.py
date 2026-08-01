@@ -10,6 +10,7 @@ This module provides functionality for:
 
 import os
 import json
+import sys
 import torch
 import opensmile
 import gc
@@ -24,6 +25,42 @@ from runtime_services import (
 
 
 _SCIPY_WAV_EXTENSIONS = {".wav", ".wave"}
+_WORKER_RUNTIME_ROOT_ENV = "MULTISOCIAL_WORKER_RUNTIME_ROOT"
+
+
+def _private_worker_opensmile_config_root():
+    """Return the launcher's verified ASCII OpenSMILE config root, if any.
+
+    OpenSMILE builds its config paths from ``realpath(__file__)``. On Windows,
+    that resolves the worker's private ASCII drive alias back to a Unicode
+    install path, while the bundled SMILE API encodes configuration paths as
+    ASCII. The native launcher preserves its ASCII worker-root spelling for
+    this narrow use. It is accepted only when it is this process' actual
+    worker directory and contains the packaged OpenSMILE config tree.
+    """
+    if sys.platform != "win32":
+        return None
+    runtime_root = os.environ.get(_WORKER_RUNTIME_ROOT_ENV)
+    if not runtime_root or not runtime_root.isascii():
+        return None
+    config_root = os.path.join(
+        runtime_root, "Lib", "site-packages", "opensmile", "core", "config"
+    )
+    try:
+        executable_root = os.path.dirname(os.path.abspath(sys.executable))
+        if not os.path.isdir(config_root) or not os.path.samefile(runtime_root, executable_root):
+            return None
+    except OSError:
+        return None
+    return config_root
+
+
+class _PrivateWorkerSmile(opensmile.Smile):
+    """Use the verified ASCII config root only in the Windows private worker."""
+
+    @property
+    def default_config_root(self):
+        return _private_worker_opensmile_config_root() or super().default_config_root
 
 
 def _pcm_audio_to_mono_float32(audio, sampling_rate):
@@ -195,7 +232,7 @@ class AudioProcessor:
                 progress_callback(10)
             
             # Initialize OpenSMILE processor
-            smile = opensmile.Smile(feature_set=feature_set_name, feature_level=feature_level_name)
+            smile = _PrivateWorkerSmile(feature_set=feature_set_name, feature_level=feature_level_name)
             
             if progress_callback:
                 progress_callback(20)
@@ -304,7 +341,7 @@ class AudioProcessor:
 
         # Use standard large-v3-turbo for better speed/accuracy balance than distil
         # or fallback to large-v3 if turbo is unavailable
-        model_id = "openai/whisper-large-v3-turbo"
+        model_id = os.environ.get("MULTISOCIAL_WHISPER_MODEL_ID", "openai/whisper-large-v3-turbo")
 
         if progress_callback:
             progress_callback(10)
