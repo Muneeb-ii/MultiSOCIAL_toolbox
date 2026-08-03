@@ -1,4 +1,4 @@
-"""Windows-native setup used only by the private console analysis worker."""
+"""Frozen-runtime compatibility helpers for native analysis dependencies."""
 
 from __future__ import annotations
 

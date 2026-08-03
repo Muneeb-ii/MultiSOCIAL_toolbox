@@ -129,3 +129,11 @@ def test_windows_release_builds_install_only_from_committed_lock():
     assert "--whisper-attempts" in e2e
     assert "Whisper ASR failed after" in e2e
     assert 'glob("*.json")' not in e2e
+    assert '"align_features"' in e2e
+    assert "Feature alignment did not commit aligned.csv" in e2e
+
+    macos_e2e = (REPO_ROOT / "src" / "macos_packaged_e2e.py").read_text(encoding="utf-8")
+    assert "_run_diarization" in macos_e2e
+    assert "MULTISOCIAL_CI_HF_TOKEN" in macos_e2e
+    assert 'MULTISOCIAL_BUILD_PROFILE") == "complete"' in macos_e2e
+    assert "MULTISOCIAL_CI_HF_TOKEN: ${{ secrets.MULTISOCIAL_CI_HF_TOKEN }}" in workflow

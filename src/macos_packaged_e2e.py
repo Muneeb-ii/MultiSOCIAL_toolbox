@@ -131,6 +131,25 @@ def _run_whisper(audio, tone: Path, transcripts: Path) -> None:
     raise RuntimeError(f"Whisper ASR failed after {WHISPER_ATTEMPTS} attempts") from error
 
 
+def _run_diarization(backend, tone: Path, workspace: Path) -> None:
+    """Exercise the Complete-only PyAnnote path with the fork-scoped CI token."""
+    token = os.environ.get("MULTISOCIAL_CI_HF_TOKEN")
+    if not token:
+        raise RuntimeError("MULTISOCIAL_CI_HF_TOKEN is required for Complete macOS E2E")
+    diarized = workspace / "diarized"
+    diarized.mkdir(exist_ok=True)
+    audio = backend.create_audio_processor(
+        None,
+        str(diarized),
+        enable_speaker_diarization=True,
+        auth_token=token,
+    )
+    outcome = audio.extract_transcripts_batch([str(tone)])
+    _assert_success(outcome, "Complete diarization")
+    if not list(diarized.glob("*.txt")):
+        raise RuntimeError("Complete diarization did not commit a transcript")
+
+
 def main() -> None:
     workspace_env = os.environ.get("MULTISOCIAL_MACOS_E2E_WORKSPACE")
     if not workspace_env:
@@ -207,6 +226,8 @@ def main() -> None:
         raise RuntimeError("Cancellation left committed or staged audio output")
 
     _run_whisper(audio, tone, transcripts)
+    if os.environ.get("MULTISOCIAL_BUILD_PROFILE") == "complete":
+        _run_diarization(backend, tone, workspace)
     print("Packaged macOS native E2E passed.", flush=True)
 
 

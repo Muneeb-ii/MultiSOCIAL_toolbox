@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -592,6 +593,37 @@ def test_worker_preloads_diarization_dependencies_before_provenance_check(monkey
         "extract_transcripts",
         {"enable_diarization": True},
     )
+
+
+def test_worker_alignment_reports_the_same_file_status_as_native_batch(tmp_path, monkeypatch):
+    import analysis_worker
+
+    class FakeAudioProcessor:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def align_features(self, _features, _transcript, output):
+            Path(output).write_text("aligned", encoding="utf-8")
+            return output
+
+    monkeypatch.setattr(analysis_worker, "_enable_worker_tensor_loader", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "audio",
+        types.SimpleNamespace(AudioProcessor=FakeAudioProcessor),
+    )
+    output = tmp_path / "aligned.csv"
+    statuses = []
+
+    result = analysis_worker._run_alignment(
+        {"alignment_pairs": [["features.csv", "words.json", str(output)]]},
+        threading.Event(),
+        lambda _value: None,
+        statuses.append,
+    )
+
+    assert result["succeeded"] == [str(output)]
+    assert statuses == ["Aligning: aligned.csv"]
 
 
 def test_staged_output_promotes_only_complete_files(tmp_path):

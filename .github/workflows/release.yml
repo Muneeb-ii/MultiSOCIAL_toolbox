@@ -145,6 +145,7 @@ jobs:
           MULTISOCIAL_WHISPER_MODEL_REVISION: 169d4a4341b33bc18d8881c4b69c2e104e1cc0af
           MULTISOCIAL_MACOS_PACKAGED_E2E: "1"
           MULTISOCIAL_MACOS_E2E_WORKSPACE: ${{ github.workspace }}/.tmp/macos-e2e-${{ matrix.profile }}
+          MULTISOCIAL_CI_HF_TOKEN: ${{ secrets.MULTISOCIAL_CI_HF_TOKEN }}
         run: |
           set -euo pipefail
           app_name="MultiSOCIAL-Standard"

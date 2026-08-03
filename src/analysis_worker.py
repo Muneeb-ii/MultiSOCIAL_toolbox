@@ -600,6 +600,7 @@ def _run_alignment(payload: dict[str, Any], cancelled: threading.Event, emit_pro
         with stage_context as stage:
             staged_output = str(Path(stage) / Path(output_csv).name)
             try:
+                emit_status(f"Aligning: {os.path.basename(output_csv)}")
                 processor = AudioProcessor(None, None, status_callback=emit_status)
                 result = processor.align_features(features_csv, transcript_json, staged_output)
                 if result != staged_output or not os.path.isfile(staged_output):

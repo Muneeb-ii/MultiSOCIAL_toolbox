@@ -253,6 +253,29 @@ def main() -> None:
     if not (features / "tone.csv").is_file():
         raise RuntimeError("OpenSMILE did not commit tone.csv")
 
+    words = workspace / "tone_words.json"
+    words.write_text(
+        json.dumps({"chunks": [{"text": "tone", "timestamp": [0.0, 0.5]}]}),
+        encoding="utf-8",
+    )
+    aligned = workspace / "aligned.csv"
+    alignment_result = _invoke(
+        gui,
+        workspace,
+        "alignment",
+        "align_features",
+        {
+            "alignment_pairs": [[
+                str((features / "tone.csv").resolve()),
+                str(words.resolve()),
+                str(aligned.resolve()),
+            ]],
+        },
+    )
+    _assert_success(alignment_result, "Feature alignment")
+    if not aligned.is_file():
+        raise RuntimeError("Feature alignment did not commit aligned.csv")
+
     pose_single = workspace / "pose-single"
     pose_multi = workspace / "pose-multi"
     embed = workspace / "embed"
