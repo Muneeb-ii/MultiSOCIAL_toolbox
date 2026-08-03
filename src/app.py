@@ -1402,10 +1402,10 @@ class VideoToWavConverter(wx.Frame):
                 csv_paths = self._pose_csv_paths_for_embedded_video(video)
 
                 if not csv_paths:
-                    self.set_status_message(f"⚠️ No CSVs found for {base}; skipping")
+                    self.set_status_message(f"No CSVs found for {base}; skipping")
                     continue
 
-                self.set_status_message(f"🔎 Verifying pose match: {os.path.basename(video)}")
+                self.set_status_message(f"Verifying pose match: {os.path.basename(video)}")
                 try:
                     worst_dir = os.path.join(worst_frames_root, base)
                     def verify_progress(local_progress, file_index=i, file_total=total):
@@ -1440,7 +1440,7 @@ class VideoToWavConverter(wx.Frame):
                         "min_hit_rate": report.get("min_hit_rate"),
                     })
                 except Exception as e:
-                    self.set_status_message(f"❌ Verification failed for {base}: {e}")
+                    self.set_status_message(f"Verification failed for {base}: {e}")
 
                 # Progress update
                 overall = int((i / max(1, total)) * 100)
@@ -2172,7 +2172,7 @@ class VideoToWavConverter(wx.Frame):
                 # 1. Ensure we have word-level transcript (JSON)
                 json_path = os.path.join(self.extracted_transcripts_folder, f"{base_name}_words.json")
                 if not os.path.exists(json_path):
-                    self.set_status_message(f"📝 Generating word-level transcript for: {base_name}")
+                    self.set_status_message(f"Generating word-level transcript for: {base_name}")
                     try:
                         # Force word timestamps
                         audio_processor.extract_transcript(audio_file, word_timestamps=True)
@@ -2192,7 +2192,7 @@ class VideoToWavConverter(wx.Frame):
                 # The AudioProcessor.extract_audio_features saves them as {base_name}.csv
                 feature_csv = os.path.join(self.extracted_audio_folder, f"{base_name}.csv")
                 if not os.path.exists(feature_csv):
-                    self.set_status_message(f"🎵 Extracting audio features for: {base_name}")
+                    self.set_status_message(f"Extracting audio features for: {base_name}")
                     try:
                         # Auto-extract missing features for this file
                         audio_processor.extract_audio_features(audio_file)

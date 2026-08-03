@@ -319,7 +319,7 @@ class AudioProcessor:
             if cancel_check and cancel_check():
                 outcome["cancelled"] = True
                 break
-            self.set_status_message(f"🎧 Extracting audio features from: {os.path.basename(audio_file)}")
+            self.set_status_message(f"Extracting audio features from: {os.path.basename(audio_file)}")
             print(f"Extracting features from: {audio_file}")
             
             # Create progress callback for this audio file
@@ -402,7 +402,7 @@ class AudioProcessor:
         try:
             print("Attempting to load Whisper model from local cache...")
             self.whisper_model = load_whisper_from_pretrained(local_files_only=True)
-            print("✓ Loaded Whisper model from cache.")
+            print("Loaded Whisper model from cache.")
         except Exception as e:
             print(f"Whisper model not found in cache or error loading: {e}. Downloading...")
             self.whisper_model = load_whisper_from_pretrained(local_files_only=False)
@@ -566,7 +566,7 @@ class AudioProcessor:
         print("Pre-loading PyAnnote speaker diarization model...")
         try:
             self._load_speaker_diarizer()
-            print("✓ PyAnnote model pre-loaded successfully")
+            print("PyAnnote model pre-loaded successfully")
         finally:
             self._clear_speaker_diarizer()
 
@@ -1073,7 +1073,7 @@ class AudioProcessor:
             audio_path = os.path.normpath(os.path.abspath(audio_file))
 
             try:
-                self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                self.set_status_message(f"Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
                 file_progress(0)
                 self._load_whisper_model()
                 file_progress(10)
@@ -1095,7 +1095,7 @@ class AudioProcessor:
                 self._clear_whisper_model()
                 file_progress(50)
 
-                self.set_status_message(f"🎭 Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+                self.set_status_message(f"Diarizing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
                 speaker_segments = None
                 try:
                     self._load_speaker_diarizer()
@@ -1172,7 +1172,7 @@ class AudioProcessor:
         transcription_end = 95
         
         # ===== PHASE 1: Load Whisper model ONCE =====
-        self.set_status_message("🔄 Loading speech recognition model...")
+        self.set_status_message("Loading speech recognition model...")
         if progress_callback:
             progress_callback(0)
         
@@ -1193,7 +1193,7 @@ class AudioProcessor:
             if cancel_check and cancel_check():
                 outcome["cancelled"] = True
                 break
-            self.set_status_message(f"🗣️ Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
+            self.set_status_message(f"Transcribing ({i+1}/{total_files}): {os.path.basename(audio_file)}")
 
             transcript, result = None, None
             try:
@@ -1353,7 +1353,7 @@ class AudioProcessor:
         total = len(alignment_pairs)
         for i, (feat_csv, trans_json, out_csv) in enumerate(alignment_pairs):
             try:
-                self.set_status_message(f"🔗 Aligning: {os.path.basename(out_csv)}")
+                self.set_status_message(f"Aligning: {os.path.basename(out_csv)}")
                 result = self.align_features(feat_csv, trans_json, out_csv)
                 if result != out_csv or not os.path.isfile(out_csv):
                     raise RuntimeError("Alignment did not write its output CSV")
@@ -1441,7 +1441,7 @@ class PyAnnoteSpeakerDiarizer:
             # Move pipeline to the specified device
             if self.diarization_pipeline is not None:
                 self.diarization_pipeline.to(torch.device(self.device))
-                print(f"✓ PyAnnote pipeline moved to {self.device}")
+                print(f"PyAnnote pipeline moved to {self.device}")
             
             if self.progress_callback:
                 self.progress_callback(20)
