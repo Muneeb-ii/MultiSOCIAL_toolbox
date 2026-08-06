@@ -12,8 +12,9 @@ if sys.platform == "win32":
 
 _DLL_DIR_HANDLES = []
 
-# Keep DLL lookup deterministic without changing PATH. The GUI never imports
-# this module; the isolated worker holds these loader handles for its lifetime.
+# Keep DLL lookup deterministic without changing PATH. Windows workers retain
+# these loader handles for their lifetime; macOS also uses this hook for the
+# packaged SpeechBrain compatibility shim below.
 _BASE_DLL_DIRECTORY_RELATIVE_PATHS = (
     ".",
     "mediapipe",
